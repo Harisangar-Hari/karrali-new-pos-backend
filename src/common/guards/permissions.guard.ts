@@ -1,0 +1,30 @@
+import {
+    CanActivate,
+    ExecutionContext,
+    ForbiddenException,
+    Injectable,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { JwtUser } from '../../modules/auth/strategies/jwt.strategy';
+import { REQUIRE_PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
+
+@Injectable()
+export class PermissionsGuard implements CanActivate {
+    constructor(private readonly reflector: Reflector) { }
+
+    canActivate(context: ExecutionContext): boolean {
+        const required = this.reflector.getAllAndOverride<string[]>(
+            REQUIRE_PERMISSIONS_KEY,
+            [context.getHandler(), context.getClass()],
+        );
+        if (!required || required.length === 0) return true;
+
+        const req = context.switchToHttp().getRequest();
+        const user: JwtUser | undefined = req.user;
+        if (!user) throw new ForbiddenException('Not authenticated');
+
+        const hasAll = required.every((p) => user.permissions.includes(p));
+        if (!hasAll) throw new ForbiddenException('Insufficient permissions');
+        return true;
+    }
+}
