@@ -10,6 +10,7 @@ import { parseDurationToSeconds } from '../../common/utils/duration.util';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { SessionsService } from './sessions.service';
+import { AuditService } from '../audit/audit.service';
 
 type AccessPayload = {
     sub: string;
@@ -26,6 +27,7 @@ export class AuthService {
         private readonly jwt: JwtService,
         private readonly sessions: SessionsService,
         private readonly config: ConfigService<AppConfig, true>,
+        private readonly audit: AuditService,
     ) { }
 
     private get accessTtlSec(): number {
@@ -57,11 +59,36 @@ export class AuthService {
         });
 
         if (!user || user.DeletedAt || !user.IsActive) {
+            const reason = !user
+                ? 'unknown_user'
+                : user.DeletedAt
+                    ? 'deleted'
+                    : 'inactive';
+            await this.audit.log({
+                UserId: user?.Id ?? null,
+                Action: 'LOGIN_FAILED',
+                Entity: 'User',
+                EntityId: user?.Id ?? null,
+                Metadata: { Username: dto.username, Reason: reason },
+                Ip: ctx.ip,
+                UserAgent: ctx.userAgent,
+            });
             throw new UnauthorizedException('Invalid credentials');
         }
 
         const ok = await bcrypt.compare(dto.password, user.PasswordHash);
-        if (!ok) throw new UnauthorizedException('Invalid credentials');
+        if (!ok) {
+            await this.audit.log({
+                UserId: user.Id,
+                Action: 'LOGIN_FAILED',
+                Entity: 'User',
+                EntityId: user.Id,
+                Metadata: { Username: dto.username, Reason: 'bad_password' },
+                Ip: ctx.ip,
+                UserAgent: ctx.userAgent,
+            });
+            throw new UnauthorizedException('Invalid credentials');
+        }
 
         const roles = user.UserRoles.map((ur) => ur.Role.Name);
         const perms = Array.from(
@@ -90,6 +117,16 @@ export class AuthService {
         await this.prisma.user.update({
             where: { Id: user.Id },
             data: { LastLogin: new Date() },
+        });
+
+        await this.audit.log({
+            UserId: user.Id,
+            Action: 'LOGIN_SUCCESS',
+            Entity: 'User',
+            EntityId: user.Id,
+            Metadata: { SessionId: sessionId, Username: user.Username },
+            Ip: ctx.ip,
+            UserAgent: ctx.userAgent,
         });
 
         return {
@@ -145,7 +182,24 @@ export class AuthService {
     }
 
     async logout(sessionId: string | null): Promise<void> {
-        if (sessionId) await this.sessions.revoke(sessionId);
+        if (!sessionId) return;
+
+        const session = await this.prisma.session.findUnique({
+            where: { Id: sessionId },
+            select: { UserId: true },
+        });
+
+        await this.sessions.revoke(sessionId);
+
+        if (session) {
+            await this.audit.log({
+                UserId: session.UserId,
+                Action: 'LOGOUT',
+                Entity: 'User',
+                EntityId: session.UserId,
+                Metadata: { SessionId: sessionId },
+            });
+        }
     }
 
     async me(userId: string) {

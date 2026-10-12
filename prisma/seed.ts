@@ -96,6 +96,10 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     // --- Settings ---
     { Code: 'settings.view', Description: 'View settings' },
     { Code: 'settings.manage', Description: 'Manage settings' },
+
+    //warehouses and terminals
+    { Code: 'warehouses.view', Description: 'View warehouses' },
+    { Code: 'terminals.view', Description: 'View terminals' },
 ];
 
 // =============================================================

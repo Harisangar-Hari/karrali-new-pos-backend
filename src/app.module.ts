@@ -9,7 +9,15 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PrismaModule } from './database/prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
-
+import { WarehousesModule } from './modules/warehouses/warehouses.module';
+import { TerminalsModule } from './modules/terminals/terminals.module';
+import { CategoriesModule } from './modules/categories/categories.module';
+import { BrandsModule } from './modules/brands/brands.module';
+import { ProductsModule } from './modules/products/products.module';
+import { AuditModule } from './modules/audit/audit.module';
+import { StockModule } from './modules/stock/stock.module';
+import { CommonModule } from './common/common.module';
+import { SettingsModule } from './modules/settings/settings.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -30,8 +38,17 @@ import { AuthModule } from './modules/auth/auth.module';
       },
     }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    CommonModule,
     PrismaModule,
     AuthModule,
+    WarehousesModule,
+    AuditModule,
+    TerminalsModule,
+    CategoriesModule,
+    BrandsModule,
+    ProductsModule,
+    StockModule,
+    SettingsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
