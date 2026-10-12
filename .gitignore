@@ -1,0 +1,99 @@
+# ================================
+# Dependencies
+# ================================
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+.yarnrc.yml
+
+# ================================
+# Environment (NEVER commit these)
+# ================================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+!.env.example
+
+# ================================
+# Build output
+# ================================
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# ================================
+# Prisma
+# ================================
+prisma/migrations/**/migration_lock.toml.bak
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ================================
+# Logs
+# ================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+pino-*.log
+
+# ================================
+# Test coverage
+# ================================
+coverage/
+.nyc_output/
+*.lcov
+
+# ================================
+# Caches & temp
+# ================================
+.cache/
+.temp/
+.tmp/
+.eslintcache
+.nest/
+.node_repl_history
+
+# ================================
+# IDE / Editor
+# ================================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ================================
+# OS junk
+# ================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ================================
+# Misc
+# ================================
+*.pid
+*.seed
+*.pid.lock
