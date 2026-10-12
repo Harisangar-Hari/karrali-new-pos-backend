@@ -7,31 +7,29 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // =============================================================
-// PHASE 1 — AUTHENTICATION & AUTHORIZATION
+// PHASE 1 — AUTH
 // =============================================================
 
 model User {
-  Id             String  @id @default(uuid()) @db.Uuid
-  Username       String  @unique
+  Id             String    @id @default(uuid()) @db.Uuid
+  Username       String    @unique
   PasswordHash   String
   FullName       String?
-  Email          String? @unique
-  IsActive       Boolean @default(true)
-  SessionVersion Int     @default(0)
+  Email          String?   @unique
+  IsActive       Boolean   @default(true)
+  SessionVersion Int       @default(0)
+  LastLogin      DateTime? @db.Timestamptz(6)
 
-  LastLogin DateTime? @db.Timestamptz(6)
-
-  CreatedAt DateTime  @default(now()) @db.Timestamptz(6)
-  UpdatedAt DateTime  @updatedAt @db.Timestamptz(6)
-  DeletedAt DateTime? @db.Timestamptz(6)
-
-  CreatedByUserId String? @db.Uuid
-  UpdatedByUserId String? @db.Uuid
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
 
   Sessions  Session[]
   UserRoles UserRole[]
@@ -47,12 +45,11 @@ model Role {
   Description String?
   IsSystem    Boolean @default(false)
 
-  CreatedAt DateTime  @default(now()) @db.Timestamptz(6)
-  UpdatedAt DateTime  @updatedAt @db.Timestamptz(6)
-  DeletedAt DateTime? @db.Timestamptz(6)
-
-  CreatedByUserId String? @db.Uuid
-  UpdatedByUserId String? @db.Uuid
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
 
   RolePermissions RolePermission[]
   UserRoles       UserRole[]
@@ -62,11 +59,10 @@ model Role {
 }
 
 model Permission {
-  Id          String  @id @default(uuid()) @db.Uuid
-  Code        String  @unique // 'sales.create', 'products.delete', 'reports.view'
+  Id          String   @id @default(uuid()) @db.Uuid
+  Code        String   @unique
   Description String?
-
-  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+  CreatedAt   DateTime @default(now()) @db.Timestamptz(6)
 
   RolePermissions RolePermission[]
 
@@ -74,10 +70,9 @@ model Permission {
 }
 
 model RolePermission {
-  Id           String @id @default(uuid()) @db.Uuid
-  RoleId       String @db.Uuid
-  PermissionId String @db.Uuid
-
+  Id              String   @id @default(uuid()) @db.Uuid
+  RoleId          String   @db.Uuid
+  PermissionId    String   @db.Uuid
   CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
   CreatedByUserId String?  @db.Uuid
 
@@ -91,10 +86,9 @@ model RolePermission {
 }
 
 model UserRole {
-  Id     String @id @default(uuid()) @db.Uuid
-  UserId String @db.Uuid
-  RoleId String @db.Uuid
-
+  Id              String   @id @default(uuid()) @db.Uuid
+  UserId          String   @db.Uuid
+  RoleId          String   @db.Uuid
   CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
   CreatedByUserId String?  @db.Uuid
 
@@ -110,7 +104,7 @@ model UserRole {
 model Session {
   Id               String    @id @default(uuid()) @db.Uuid
   UserId           String    @db.Uuid
-  RefreshTokenHash String // SHA-256 hex of the refresh token secret
+  RefreshTokenHash String
   UserAgent        String?
   Ip               String?
   ExpiresAt        DateTime  @db.Timestamptz(6)
@@ -128,9 +122,9 @@ model Session {
 
 model AuditLog {
   Id        String   @id @default(uuid()) @db.Uuid
-  UserId    String?  @db.Uuid // null = anonymous (failed login, etc.)
-  Action    String // 'LOGIN_SUCCESS', 'USER_CREATED', 'ROLE_ASSIGNED', ...
-  Entity    String? // 'User', 'Role', 'Sale', ...
+  UserId    String?  @db.Uuid
+  Action    String
+  Entity    String?
   EntityId  String?  @db.Uuid
   Before    Json?
   After     Json?
@@ -144,4 +138,204 @@ model AuditLog {
   @@index([Entity, EntityId])
   @@index([CreatedAt])
   @@map("AuditLogs")
+}
+
+// =============================================================
+// PHASE 2a — CATALOG INFRASTRUCTURE
+// =============================================================
+
+enum StockMovementType {
+  OPENING
+  PURCHASE
+  PURCHASE_RETURN
+  SALE
+  SALE_RETURN
+  ADJUSTMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+model Warehouse {
+  Id        String  @id @default(uuid()) @db.Uuid
+  Name      String
+  Code      String  @unique
+  Address   String?
+  IsActive  Boolean @default(true)
+  IsDefault Boolean @default(false)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Terminals       Terminal[]
+  WarehouseStocks WarehouseStock[]
+  StockMovements  StockMovement[]
+
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("Warehouses")
+}
+
+model Terminal {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Name        String
+  Code        String  @unique
+  WarehouseId String  @db.Uuid
+  IsActive    Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+
+  @@index([WarehouseId])
+  @@map("Terminals")
+}
+
+model Setting {
+  Key             String   @id
+  Value           Json
+  Description     String?
+  UpdatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  UpdatedByUserId String?  @db.Uuid
+
+  @@map("Settings")
+}
+
+model Category {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Name        String
+  Description String?
+  ParentId    String? @db.Uuid
+  IsActive    Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Parent   Category?  @relation("CategoryTree", fields: [ParentId], references: [Id], onDelete: SetNull)
+  Children Category[] @relation("CategoryTree")
+  Products Product[]
+
+  @@index([ParentId])
+  @@index([DeletedAt])
+  @@map("Categories")
+}
+
+model Brand {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Name        String  @unique
+  Description String?
+  IsActive    Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Products Product[]
+
+  @@index([DeletedAt])
+  @@map("Brands")
+}
+
+model Product {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Name        String
+  Barcode     String? @unique
+  SKU         String? @unique
+  Description String?
+  Unit        String  @default("pcs")
+
+  Price     Decimal  @db.Decimal(18, 4)
+  CostPrice Decimal  @db.Decimal(18, 4)
+  Discount  Decimal  @default(0) @db.Decimal(18, 4)
+  TaxRate   Decimal? @db.Decimal(5, 2)
+
+  ReorderLevel   Int     @default(0)
+  WarrantyMonths Int?    @default(0)
+  ImageUrl       String?
+  IsActive       Boolean @default(true)
+
+  CategoryId String  @db.Uuid
+  BrandId    String? @db.Uuid
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Category        Category         @relation(fields: [CategoryId], references: [Id], onDelete: Restrict)
+  Brand           Brand?           @relation(fields: [BrandId], references: [Id], onDelete: SetNull)
+  WarehouseStocks WarehouseStock[]
+  StockMovements  StockMovement[]
+
+  @@index([CategoryId])
+  @@index([BrandId])
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("Products")
+}
+
+model WarehouseStock {
+  Id          String @id @default(uuid()) @db.Uuid
+  ProductId   String @db.Uuid
+  WarehouseId String @db.Uuid
+  Qty         Int    @default(0)
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+  UpdatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  Product   Product   @relation(fields: [ProductId], references: [Id], onDelete: Cascade)
+  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+
+  @@unique([ProductId, WarehouseId])
+  @@index([ProductId])
+  @@index([WarehouseId])
+  @@map("WarehouseStocks")
+}
+
+model StockMovement {
+  Id          String            @id @default(uuid()) @db.Uuid
+  ProductId   String            @db.Uuid
+  WarehouseId String            @db.Uuid
+  Type        StockMovementType
+
+  // Sign convention:
+  //   positive = into warehouse (PURCHASE, SALE_RETURN, OPENING, TRANSFER_IN)
+  //   negative = out of warehouse (SALE, PURCHASE_RETURN, TRANSFER_OUT)
+  //   ADJUSTMENT uses whichever sign matches the correction.
+  Quantity Int
+  UnitCost Decimal? @db.Decimal(18, 4)
+  Notes    String?
+
+  // Reference IDs — plain UUIDs today; FKs added when Sale/Purchase
+  // models land in later phases.
+  SaleId       String? @db.Uuid
+  SaleReturnId String? @db.Uuid
+  PurchaseId   String? @db.Uuid
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Product   Product   @relation(fields: [ProductId], references: [Id], onDelete: Restrict)
+  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+
+  @@index([ProductId])
+  @@index([WarehouseId])
+  @@index([Type])
+  @@index([SaleId])
+  @@index([SaleReturnId])
+  @@index([PurchaseId])
+  @@index([CreatedAt])
+  @@map("StockMovements")
 }

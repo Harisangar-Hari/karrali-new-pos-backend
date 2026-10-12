@@ -12,8 +12,8 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? 'admin@karrali.local';
 
 // =============================================================
 // Permission catalog — the full set of actions in the system.
-// Add to this list as new modules come online (Purchases,
-// Returns, etc.). The seed is idempotent, so re-running is safe.
+// Add to this list as new modules come online. The seed is
+// idempotent, so re-running is safe.
 // =============================================================
 const PERMISSIONS: { Code: string; Description: string }[] = [
     // --- Auth / users / audit ---
@@ -33,6 +33,7 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'categories.manage', Description: 'Manage categories' },
     { Code: 'brands.manage', Description: 'Manage brands' },
     { Code: 'warehouses.manage', Description: 'Manage warehouses' },
+    { Code: 'terminals.manage', Description: 'Manage terminals' },
 
     { Code: 'customers.view', Description: 'View customers' },
     { Code: 'customers.create', Description: 'Create customers' },
@@ -112,7 +113,7 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
         Description: 'Store manager — everything except user/role administration.',
         Permissions: [
             'products.view', 'products.create', 'products.update', 'products.delete',
-            'categories.manage', 'brands.manage', 'warehouses.manage',
+            'categories.manage', 'brands.manage', 'warehouses.manage', 'terminals.manage',
             'customers.view', 'customers.create', 'customers.update', 'customers.delete',
             'suppliers.view', 'suppliers.manage',
             'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete',
@@ -172,7 +173,7 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
 ];
 
 // =============================================================
-// Seeder
+// Seeder functions
 // =============================================================
 async function seedPermissions() {
     console.log('  ↳ Upserting %d permissions...', PERMISSIONS.length);
@@ -194,7 +195,6 @@ async function seedRoles() {
             update: { Description: r.Description, IsSystem: true },
         });
 
-        // Resolve target permission codes
         const codes = r.Permissions === '*'
             ? PERMISSIONS.map(p => p.Code)
             : r.Permissions;
@@ -253,11 +253,38 @@ async function seedAdmin() {
     });
 }
 
+async function seedWarehouseAndTerminal() {
+    console.log('  ↳ Upserting default warehouse and terminal...');
+
+    const warehouse = await prisma.warehouse.upsert({
+        where: { Code: 'MAIN' },
+        create: {
+            Name: 'Main Warehouse',
+            Code: 'MAIN',
+            IsActive: true,
+            IsDefault: true,
+        },
+        update: { IsActive: true },
+    });
+
+    await prisma.terminal.upsert({
+        where: { Code: 'MAIN-01' },
+        create: {
+            Name: 'Main Terminal',
+            Code: 'MAIN-01',
+            WarehouseId: warehouse.Id,
+            IsActive: true,
+        },
+        update: { IsActive: true, WarehouseId: warehouse.Id },
+    });
+}
+
 async function main() {
     console.log('🌱 Seeding Karrali POS database...');
     await seedPermissions();
     await seedRoles();
     await seedAdmin();
+    await seedWarehouseAndTerminal();
     console.log('✅ Seed complete.');
 
     if (ADMIN_PASSWORD === 'Admin@12345') {
