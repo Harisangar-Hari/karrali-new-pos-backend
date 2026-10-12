@@ -36,9 +36,16 @@ const SENSITIVE_KEYS = new Set<string>([
  */
 function sanitize(value: unknown): unknown {
     if (value === null || value === undefined) return value;
-    if (Array.isArray(value)) return value.map(sanitize);
     if (value instanceof Date) return value;
+    if (Array.isArray(value)) return value.map(sanitize);
     if (typeof value !== 'object') return value;
+
+    // Decimal (decimal.js), and any future type with a custom
+    // serializer, must go through toJSON before we enumerate keys.
+    const withJson = value as { toJSON?: () => unknown };
+    if (typeof withJson.toJSON === 'function') {
+        return sanitize(withJson.toJSON());
+    }
 
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

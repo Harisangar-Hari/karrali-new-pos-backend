@@ -18,6 +18,8 @@ import { AuditModule } from './modules/audit/audit.module';
 import { StockModule } from './modules/stock/stock.module';
 import { CommonModule } from './common/common.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -49,6 +51,8 @@ import { SettingsModule } from './modules/settings/settings.module';
     ProductsModule,
     StockModule,
     SettingsModule,
+    CustomersModule,
+    SuppliersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

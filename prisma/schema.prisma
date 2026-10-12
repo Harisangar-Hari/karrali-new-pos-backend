@@ -339,3 +339,138 @@ model StockMovement {
   @@index([CreatedAt])
   @@map("StockMovements")
 }
+
+// =============================================================
+// PHASE 2c — CUSTOMERS + SUPPLIERS
+// =============================================================
+
+enum CustomerType {
+  RETAIL
+  WHOLESALE
+  CORPORATE
+  VIP
+  GOVERNMENT
+  EDUCATIONAL
+}
+
+enum CustomerLedgerType {
+  OPENING
+  SALE
+  SALE_RETURN
+  PAYMENT
+  CHEQUE
+  CHEQUE_BOUNCED
+  ADJUSTMENT
+  WRITE_OFF
+}
+
+model CodeSequence {
+  Prefix     String   @id
+  LastNumber Int      @default(0)
+  UpdatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("CodeSequences")
+}
+
+model Customer {
+  Id   String       @id @default(uuid()) @db.Uuid
+  Code String       @unique // CUST-00001, service-generated
+  Name String
+  Type CustomerType @default(RETAIL)
+
+  Phone     String? // indexed, not unique — walk-ins share numbers
+  Email     String? // indexed, not unique — families share addresses
+  Address   String?
+  TaxNumber String?
+
+  Balance Decimal @default(0) @db.Decimal(18, 4)
+
+  CreditLimit  Decimal @default(0) @db.Decimal(18, 4)
+  PaymentTerms String? // free-form for now ("Net 30", "Due on receipt")
+
+  // Loyalty — columns reserved; engine lands in Phase 7.
+  LoyaltyPoints Int     @default(0)
+  LoyaltyTier   String?
+
+  Notes    String?
+  IsActive Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  LedgerEntries CustomerLedger[]
+
+  @@index([Name])
+  @@index([Phone])
+  @@index([Email])
+  @@index([Type])
+  @@index([Balance]) // aging reports filter on non-zero balances
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("Customers")
+}
+
+model CustomerLedger {
+  Id         String             @id @default(uuid()) @db.Uuid
+  CustomerId String             @db.Uuid
+  Type       CustomerLedgerType
+
+  Amount       Decimal @db.Decimal(18, 4) // signed
+  BalanceAfter Decimal @db.Decimal(18, 4) // running snapshot
+  Notes        String?
+
+  SaleId          String? @db.Uuid
+  SaleReturnId    String? @db.Uuid
+  CreditPaymentId String? @db.Uuid
+  ChequeId        String? @db.Uuid
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Customer Customer @relation(fields: [CustomerId], references: [Id], onDelete: Restrict)
+
+  @@index([CustomerId])
+  @@index([Type])
+  @@index([CreatedAt])
+  @@index([SaleId])
+  @@index([CreditPaymentId])
+  @@map("CustomerLedgers")
+}
+
+model Supplier {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // SUP-00001, service-generated
+  Name String
+
+  Phone     String?
+  Email     String?
+  Address   String?
+  TaxNumber String?
+
+  PaymentTerms String? // free-form ("Net 30", "COD")
+
+  // Bank details — one supplier, one account. Column approach, not a table.
+  BankName      String?
+  BankAccountNo String?
+  BankBranch    String?
+  BankSwift     String?
+
+  Notes    String?
+  IsActive Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  @@index([Name])
+  @@index([Phone])
+  @@index([Email])
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("Suppliers")
+}
