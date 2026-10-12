@@ -1,0 +1,147 @@
+// =============================================================
+// Prisma schema — KARRALI POS
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+// =============================================================
+// PHASE 1 — AUTHENTICATION & AUTHORIZATION
+// =============================================================
+
+model User {
+  Id             String  @id @default(uuid()) @db.Uuid
+  Username       String  @unique
+  PasswordHash   String
+  FullName       String?
+  Email          String? @unique
+  IsActive       Boolean @default(true)
+  SessionVersion Int     @default(0)
+
+  LastLogin DateTime? @db.Timestamptz(6)
+
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt DateTime? @db.Timestamptz(6)
+
+  CreatedByUserId String? @db.Uuid
+  UpdatedByUserId String? @db.Uuid
+
+  Sessions  Session[]
+  UserRoles UserRole[]
+
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("Users")
+}
+
+model Role {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Name        String  @unique
+  Description String?
+  IsSystem    Boolean @default(false)
+
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt DateTime? @db.Timestamptz(6)
+
+  CreatedByUserId String? @db.Uuid
+  UpdatedByUserId String? @db.Uuid
+
+  RolePermissions RolePermission[]
+  UserRoles       UserRole[]
+
+  @@index([DeletedAt])
+  @@map("Roles")
+}
+
+model Permission {
+  Id          String  @id @default(uuid()) @db.Uuid
+  Code        String  @unique // 'sales.create', 'products.delete', 'reports.view'
+  Description String?
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  RolePermissions RolePermission[]
+
+  @@map("Permissions")
+}
+
+model RolePermission {
+  Id           String @id @default(uuid()) @db.Uuid
+  RoleId       String @db.Uuid
+  PermissionId String @db.Uuid
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Role       Role       @relation(fields: [RoleId], references: [Id], onDelete: Cascade)
+  Permission Permission @relation(fields: [PermissionId], references: [Id], onDelete: Cascade)
+
+  @@unique([RoleId, PermissionId])
+  @@index([RoleId])
+  @@index([PermissionId])
+  @@map("RolePermissions")
+}
+
+model UserRole {
+  Id     String @id @default(uuid()) @db.Uuid
+  UserId String @db.Uuid
+  RoleId String @db.Uuid
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  User User @relation(fields: [UserId], references: [Id], onDelete: Cascade)
+  Role Role @relation(fields: [RoleId], references: [Id], onDelete: Cascade)
+
+  @@unique([UserId, RoleId])
+  @@index([UserId])
+  @@index([RoleId])
+  @@map("UserRoles")
+}
+
+model Session {
+  Id               String    @id @default(uuid()) @db.Uuid
+  UserId           String    @db.Uuid
+  RefreshTokenHash String // SHA-256 hex of the refresh token secret
+  UserAgent        String?
+  Ip               String?
+  ExpiresAt        DateTime  @db.Timestamptz(6)
+  RevokedAt        DateTime? @db.Timestamptz(6)
+  LastUsedAt       DateTime? @db.Timestamptz(6)
+  CreatedAt        DateTime  @default(now()) @db.Timestamptz(6)
+
+  User User @relation(fields: [UserId], references: [Id], onDelete: Cascade)
+
+  @@index([UserId])
+  @@index([ExpiresAt])
+  @@index([RevokedAt])
+  @@map("Sessions")
+}
+
+model AuditLog {
+  Id        String   @id @default(uuid()) @db.Uuid
+  UserId    String?  @db.Uuid // null = anonymous (failed login, etc.)
+  Action    String // 'LOGIN_SUCCESS', 'USER_CREATED', 'ROLE_ASSIGNED', ...
+  Entity    String? // 'User', 'Role', 'Sale', ...
+  EntityId  String?  @db.Uuid
+  Before    Json?
+  After     Json?
+  Metadata  Json?
+  Ip        String?
+  UserAgent String?
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([UserId])
+  @@index([Action])
+  @@index([Entity, EntityId])
+  @@index([CreatedAt])
+  @@map("AuditLogs")
+}
