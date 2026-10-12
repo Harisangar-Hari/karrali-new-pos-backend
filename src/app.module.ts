@@ -20,6 +20,9 @@ import { CommonModule } from './common/common.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
+import { PurchasesModule } from './modules/purchases/purchases.module';
+import { SupplierPaymentsModule } from './modules/supplier-payments/supplier-payments.module';
+import { SupplierChequesModule } from './modules/supplier-cheques/supplier-cheques.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -53,6 +56,9 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
     SettingsModule,
     CustomersModule,
     SuppliersModule,
+    PurchasesModule,
+    SupplierPaymentsModule,
+    SupplierChequesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

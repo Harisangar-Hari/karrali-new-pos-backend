@@ -51,6 +51,12 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'supplier_payments.view', Description: 'View supplier payments' },
     { Code: 'supplier_payments.create', Description: 'Create supplier payments' },
     { Code: 'supplier_payments.clear', Description: 'Clear/bounce supplier cheques' },
+    { Code: 'supplier_cheques.view', Description: 'View supplier cheques' },
+    { Code: 'supplier_cheques.create', Description: 'Issue supplier cheques' },
+    { Code: 'supplier_cheques.clear', Description: 'Mark supplier cheques as cleared' },
+    { Code: 'supplier_cheques.bounce', Description: 'Mark supplier cheques as bounced' },
+    { Code: 'supplier_cheques.void', Description: 'Void a pending supplier cheque' },
+    { Code: 'supplier_payments.reverse', Description: 'Reverse (delete) a recorded supplier payment' },
 
     // --- Sales ---
     { Code: 'sales.view', Description: 'View sales' },

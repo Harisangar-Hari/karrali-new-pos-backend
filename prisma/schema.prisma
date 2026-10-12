@@ -172,6 +172,7 @@ model Warehouse {
   Terminals       Terminal[]
   WarehouseStocks WarehouseStock[]
   StockMovements  StockMovement[]
+  Purchases       Purchase[]
 
   @@index([IsActive])
   @@index([DeletedAt])
@@ -278,6 +279,7 @@ model Product {
   Brand           Brand?           @relation(fields: [BrandId], references: [Id], onDelete: SetNull)
   WarehouseStocks WarehouseStock[]
   StockMovements  StockMovement[]
+  PurchaseItems   PurchaseItem[]
 
   @@index([CategoryId])
   @@index([BrandId])
@@ -461,11 +463,14 @@ model Supplier {
   Notes    String?
   IsActive Boolean @default(true)
 
-  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
-  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
-  DeletedAt       DateTime? @db.Timestamptz(6)
-  CreatedByUserId String?   @db.Uuid
-  UpdatedByUserId String?   @db.Uuid
+  CreatedAt       DateTime          @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime          @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime?         @db.Timestamptz(6)
+  CreatedByUserId String?           @db.Uuid
+  UpdatedByUserId String?           @db.Uuid
+  Purchases       Purchase[]
+  Payments        SupplierPayment[]
+  Cheques         SupplierCheque[]
 
   @@index([Name])
   @@index([Phone])
@@ -473,4 +478,162 @@ model Supplier {
   @@index([IsActive])
   @@index([DeletedAt])
   @@map("Suppliers")
+}
+
+// =============================================================
+// PHASE 3 — PURCHASES + SUPPLIER PAYMENTS + SUPPLIER CHEQUES
+// =============================================================
+
+enum PurchaseStatus {
+  POSTED
+  CANCELLED
+}
+
+enum SupplierPaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHEQUE
+}
+
+enum SupplierChequeStatus {
+  PENDING // issued, waiting to clear
+  CLEARED // cleared — SupplierPayment created
+  BOUNCED // bounced — no payment
+  VOIDED // cancelled before clearing
+}
+
+model Purchase {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // PUR-00001
+
+  SupplierId        String    @db.Uuid
+  SupplierInvoiceNo String? // supplier's own invoice number
+  InvoiceDate       DateTime  @db.Timestamptz(6)
+  DueDate           DateTime? @db.Timestamptz(6)
+  WarehouseId       String    @db.Uuid
+
+  Status PurchaseStatus @default(POSTED)
+
+  Subtotal    Decimal @db.Decimal(18, 4) // sum of LineSubtotal
+  TaxAmount   Decimal @default(0) @db.Decimal(18, 4) // sum of LineTax
+  TotalAmount Decimal @db.Decimal(18, 4) // Subtotal + TaxAmount
+  PaidAmount  Decimal @default(0) @db.Decimal(18, 4) // cache of payments
+
+  Notes String?
+
+  CreatedAt         DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt         DateTime? @db.Timestamptz(6)
+  CreatedByUserId   String?   @db.Uuid
+  UpdatedByUserId   String?   @db.Uuid
+  CancelledAt       DateTime? @db.Timestamptz(6)
+  CancelledByUserId String?   @db.Uuid
+
+  Supplier  Supplier  @relation(fields: [SupplierId], references: [Id], onDelete: Restrict)
+  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+
+  Items    PurchaseItem[]
+  Payments SupplierPayment[]
+  Cheques  SupplierCheque[]
+
+  @@index([SupplierId])
+  @@index([WarehouseId])
+  @@index([Status])
+  @@index([InvoiceDate])
+  @@index([DueDate]) // AP aging
+  @@index([CreatedAt])
+  @@map("Purchases")
+}
+
+model PurchaseItem {
+  Id         String @id @default(uuid()) @db.Uuid
+  PurchaseId String @db.Uuid
+  ProductId  String @db.Uuid
+
+  Qty      Int
+  UnitCost Decimal  @db.Decimal(18, 4)
+  TaxRate  Decimal? @db.Decimal(5, 2) // %
+
+  LineSubtotal Decimal @db.Decimal(18, 4) // Qty * UnitCost
+  LineTax      Decimal @default(0) @db.Decimal(18, 4)
+  LineTotal    Decimal @db.Decimal(18, 4) // Subtotal + Tax
+
+  Notes String?
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  Purchase Purchase @relation(fields: [PurchaseId], references: [Id], onDelete: Cascade)
+  Product  Product  @relation(fields: [ProductId], references: [Id], onDelete: Restrict)
+
+  @@index([PurchaseId])
+  @@index([ProductId])
+  @@map("PurchaseItems")
+}
+
+model SupplierPayment {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // PAY-00001
+
+  SupplierId String                @db.Uuid
+  PurchaseId String                @db.Uuid // single-purchase payments (D4)
+  Method     SupplierPaymentMethod
+  Amount     Decimal               @db.Decimal(18, 4)
+  PaidAt     DateTime              @db.Timestamptz(6)
+
+  // Only set when Method = CHEQUE and the cheque has cleared.
+  ChequeId String? @unique @db.Uuid
+
+  Notes String?
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+  UpdatedByUserId String?  @db.Uuid
+
+  Supplier Supplier        @relation(fields: [SupplierId], references: [Id], onDelete: Restrict)
+  Purchase Purchase        @relation(fields: [PurchaseId], references: [Id], onDelete: Restrict)
+  Cheque   SupplierCheque? @relation("PaymentCheque", fields: [ChequeId], references: [Id], onDelete: SetNull)
+
+  @@index([SupplierId])
+  @@index([PurchaseId])
+  @@index([Method])
+  @@index([PaidAt])
+  @@map("SupplierPayments")
+}
+
+model SupplierCheque {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // CHQ-00001
+
+  SupplierId   String  @db.Uuid
+  PurchaseId   String  @db.Uuid
+  ChequeNumber String // physical cheque number, user-entered
+  BankName     String? // our bank (Phase 5 will link to BankAccount)
+  Amount       Decimal @db.Decimal(18, 4)
+
+  IssueDate DateTime @db.Timestamptz(6)
+  DueDate   DateTime @db.Timestamptz(6) // when to present
+
+  Status       SupplierChequeStatus @default(PENDING)
+  ClearedAt    DateTime?            @db.Timestamptz(6)
+  BouncedAt    DateTime?            @db.Timestamptz(6)
+  BounceReason String?
+
+  Notes String?
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+  UpdatedByUserId String?  @db.Uuid
+
+  Supplier Supplier         @relation(fields: [SupplierId], references: [Id], onDelete: Restrict)
+  Purchase Purchase         @relation(fields: [PurchaseId], references: [Id], onDelete: Restrict)
+  Payment  SupplierPayment? @relation("PaymentCheque")
+
+  @@index([SupplierId])
+  @@index([PurchaseId])
+  @@index([Status])
+  @@index([DueDate]) // cheque calendar (Phase 6)
+  @@index([ChequeNumber])
+  @@map("SupplierCheques")
 }
