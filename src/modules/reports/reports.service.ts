@@ -15,6 +15,99 @@ import { InventoryMovementQueryDto } from './dto/inventory-movement.dto';
 import { PaginatedResponse } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/utils/pagination.util';
 import { StockMovementType } from '@prisma/client';
+import { ArAgingQueryDto } from './dto/ar-aging.dto';
+import { ChequeCalendarQueryDto } from './dto/cheque-calendar.dto';
+import {
+    CashFlowGroup,
+    CashFlowQueryDto,
+} from './dto/cash-flow.dto';
+
+
+export interface ArAgingBucket {
+    Current: string;   // 0-30 days
+    Days31To60: string;
+    Days61To90: string;
+    Days91To180: string;
+    DaysOver180: string;
+}
+
+export interface ArAgingRow {
+    CustomerId: string;
+    Code: string;
+    Name: string;
+    Phone: string | null;
+    Balance: string;
+    CreditLimit: string;
+    AvailableCredit: string;
+    LastCreditSaleDate: string | null;
+    Buckets: ArAgingBucket;
+}
+
+export interface ArAgingReport {
+    From: string;
+    To: string;
+    Rows: ArAgingRow[];
+    Totals: ArAgingBucket & { Grand: string };
+}
+
+export interface ChequeCalendarEntry {
+    Side: 'CUSTOMER' | 'SUPPLIER';
+    ChequeId: string;
+    Code: string;
+    ChequeNumber: string;
+    Amount: string;
+    IssueDate: string;
+    DueDate: string;
+    CounterpartyId: string;
+    CounterpartyName: string;
+    CounterpartyCode: string;
+    BankName: string | null;
+    Notes: string | null;
+}
+
+export interface ChequeCalendarReport {
+    From: string;
+    To: string;
+    CustomerTotal: string;
+    SupplierTotal: string;
+    NetExposure: string;
+    Entries: ChequeCalendarEntry[];
+    ByDay: {
+        Day: string;
+        CustomerAmount: string;
+        SupplierAmount: string;
+        Count: number;
+    }[];
+}
+
+export interface CashFlowRow {
+    Period: string;
+    Opening: string;
+    In: {
+        Sale: string;
+        CreditPayment: string;
+        CashIn: string;
+        ExpenseReversed: string;
+        CreditPaymentReversed: string;
+    };
+    Out: {
+        SaleRefund: string;
+        CashOut: string;
+        Expense: string;
+    };
+    NetChange: string;
+    Closing: string;
+    EntryCount: number;
+}
+
+export interface CashFlowReport {
+    Group: CashFlowGroup;
+    From: string;
+    To: string;
+    OpeningBalance: string;
+    ClosingBalance: string;
+    Rows: CashFlowRow[];
+}
 
 export interface SalesSummaryRow {
     Period: string | null;
@@ -830,6 +923,481 @@ export class ReportsService {
             COGS: sum('COGS').toString(),
             GrossProfit: grossProfit.toString(),
             MarginPct: marginPct,
+        };
+    }
+
+    // ---------------------------------------------------------------
+    // AR Aging
+    // ---------------------------------------------------------------
+
+    async arAging(query: ArAgingQueryDto): Promise<ArAgingReport> {
+        const { from, to } = this.resolveRange(query.From, query.To);
+
+        const customerWhere: Prisma.CustomerWhereInput = {
+            DeletedAt: null,
+        };
+        if (query.CustomerId) customerWhere.Id = query.CustomerId;
+        if (!query.IncludeZeroBalance) customerWhere.Balance = { gt: 0 };
+
+        const customers = await this.prisma.customer.findMany({
+            where: customerWhere,
+            select: {
+                Id: true,
+                Code: true,
+                Name: true,
+                Phone: true,
+                Balance: true,
+                CreditLimit: true,
+            },
+            orderBy: { Balance: 'desc' },
+        });
+
+        if (customers.length === 0) {
+            const empty: ArAgingBucket = {
+                Current: '0',
+                Days31To60: '0',
+                Days61To90: '0',
+                Days91To180: '0',
+                DaysOver180: '0',
+            };
+            return {
+                From: from.toISOString(),
+                To: to.toISOString(),
+                Rows: [],
+                Totals: { ...empty, Grand: '0' },
+            };
+        }
+
+        const customerIds = customers.map((c) => c.Id);
+
+        // Fetch every credit sale for these customers, newest first.
+        // Cap the lookback at 3 years — anything older isn't invoice-relevant
+        // and would blow up the query for high-volume shops.
+        const threeYearsAgo = new Date();
+        threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+
+        const sales = await this.prisma.sale.findMany({
+            where: {
+                CustomerId: { in: customerIds },
+                DeletedAt: null,
+                Status: { not: 'CANCELLED' },
+                CreditAmount: { gt: 0 },
+                CreatedAt: { gte: threeYearsAgo, lte: to },
+            },
+            select: {
+                CustomerId: true,
+                CreatedAt: true,
+                CreditAmount: true,
+            },
+            orderBy: [{ CustomerId: 'asc' }, { CreatedAt: 'desc' }],
+        });
+
+        const salesByCustomer = new Map<string, typeof sales>();
+        for (const s of sales) {
+            const list = salesByCustomer.get(s.CustomerId) ?? [];
+            list.push(s);
+            salesByCustomer.set(s.CustomerId, list);
+        }
+
+        const now = to.getTime();
+        const dayMs = 86_400_000;
+        const ZERO = new Prisma.Decimal(0);
+
+        const rows: ArAgingRow[] = [];
+
+        for (const c of customers) {
+            const balance = new Prisma.Decimal(c.Balance);
+            if (balance.lte(0) && !query.IncludeZeroBalance) continue;
+
+            let remaining = balance;
+            const buckets: ArAgingBucket = {
+                Current: '0',
+                Days31To60: '0',
+                Days61To90: '0',
+                Days91To180: '0',
+                DaysOver180: '0',
+            };
+            const bucketNums = {
+                Current: ZERO,
+                Days31To60: ZERO,
+                Days61To90: ZERO,
+                Days91To180: ZERO,
+                DaysOver180: ZERO,
+            };
+
+            const custSales = salesByCustomer.get(c.Id) ?? [];
+            let lastCreditSaleDate: Date | null = null;
+
+            for (const s of custSales) {
+                if (!lastCreditSaleDate) lastCreditSaleDate = s.CreatedAt;
+                if (remaining.lte(0)) break;
+
+                const saleCredit = new Prisma.Decimal(s.CreditAmount);
+                const alloc = Prisma.Decimal.min(remaining, saleCredit);
+
+                const ageDays = Math.floor(
+                    (now - s.CreatedAt.getTime()) / dayMs,
+                );
+
+                if (ageDays <= 30) bucketNums.Current = bucketNums.Current.add(alloc);
+                else if (ageDays <= 60) bucketNums.Days31To60 = bucketNums.Days31To60.add(alloc);
+                else if (ageDays <= 90) bucketNums.Days61To90 = bucketNums.Days61To90.add(alloc);
+                else if (ageDays <= 180) bucketNums.Days91To180 = bucketNums.Days91To180.add(alloc);
+                else bucketNums.DaysOver180 = bucketNums.DaysOver180.add(alloc);
+
+                remaining = remaining.sub(alloc);
+            }
+
+            // Any remaining balance with no matching sale (e.g. opening
+            // balance adjustments) goes to the oldest bucket.
+            if (remaining.gt(0)) {
+                bucketNums.DaysOver180 = bucketNums.DaysOver180.add(remaining);
+            }
+
+            buckets.Current = bucketNums.Current.toString();
+            buckets.Days31To60 = bucketNums.Days31To60.toString();
+            buckets.Days61To90 = bucketNums.Days61To90.toString();
+            buckets.Days91To180 = bucketNums.Days91To180.toString();
+            buckets.DaysOver180 = bucketNums.DaysOver180.toString();
+
+            const availableCredit = new Prisma.Decimal(c.CreditLimit).sub(balance);
+
+            rows.push({
+                CustomerId: c.Id,
+                Code: c.Code,
+                Name: c.Name,
+                Phone: c.Phone,
+                Balance: balance.toString(),
+                CreditLimit: c.CreditLimit.toString(),
+                AvailableCredit: availableCredit.toString(),
+                LastCreditSaleDate: lastCreditSaleDate
+                    ? lastCreditSaleDate.toISOString()
+                    : null,
+                Buckets: buckets,
+            });
+        }
+
+        const totals = rows.reduce(
+            (acc, r) => {
+                acc.Current = acc.Current.add(new Prisma.Decimal(r.Buckets.Current));
+                acc.Days31To60 = acc.Days31To60.add(new Prisma.Decimal(r.Buckets.Days31To60));
+                acc.Days61To90 = acc.Days61To90.add(new Prisma.Decimal(r.Buckets.Days61To90));
+                acc.Days91To180 = acc.Days91To180.add(new Prisma.Decimal(r.Buckets.Days91To180));
+                acc.DaysOver180 = acc.DaysOver180.add(new Prisma.Decimal(r.Buckets.DaysOver180));
+                return acc;
+            },
+            {
+                Current: ZERO,
+                Days31To60: ZERO,
+                Days61To90: ZERO,
+                Days91To180: ZERO,
+                DaysOver180: ZERO,
+            },
+        );
+
+        const grand = totals.Current
+            .add(totals.Days31To60)
+            .add(totals.Days61To90)
+            .add(totals.Days91To180)
+            .add(totals.DaysOver180);
+
+        return {
+            From: from.toISOString(),
+            To: to.toISOString(),
+            Rows: rows,
+            Totals: {
+                Current: totals.Current.toString(),
+                Days31To60: totals.Days31To60.toString(),
+                Days61To90: totals.Days61To90.toString(),
+                Days91To180: totals.Days91To180.toString(),
+                DaysOver180: totals.DaysOver180.toString(),
+                Grand: grand.toString(),
+            },
+        };
+    }
+
+    // ---------------------------------------------------------------
+    // Cheque calendar
+    // ---------------------------------------------------------------
+
+    async chequeCalendar(
+        query: ChequeCalendarQueryDto,
+    ): Promise<ChequeCalendarReport> {
+        const now = new Date();
+        const defaultFrom = new Date(now);
+        defaultFrom.setHours(0, 0, 0, 0);
+        const defaultTo = new Date(now);
+        defaultTo.setDate(defaultTo.getDate() + 30);
+        defaultTo.setHours(23, 59, 59, 999);
+
+        const from = query.From ? new Date(query.From) : defaultFrom;
+        const to = query.To ? new Date(query.To) : defaultTo;
+
+        const customerWhere: Prisma.CustomerChequeWhereInput = {
+            Status: 'PENDING',
+            DeletedAt: null,
+            DueDate: { gte: from, lte: to },
+        };
+        if (query.CustomerId) customerWhere.CustomerId = query.CustomerId;
+
+        const supplierWhere: Prisma.SupplierChequeWhereInput = {
+            Status: 'PENDING',
+            DueDate: { gte: from, lte: to },
+        };
+        if (query.SupplierId) supplierWhere.SupplierId = query.SupplierId;
+
+        const [customerCheques, supplierCheques] = await Promise.all([
+            this.prisma.customerCheque.findMany({
+                where: customerWhere,
+                include: {
+                    Customer: { select: { Id: true, Name: true, Code: true } },
+                },
+                orderBy: { DueDate: 'asc' },
+            }),
+            this.prisma.supplierCheque.findMany({
+                where: supplierWhere,
+                include: {
+                    Supplier: { select: { Id: true, Name: true, Code: true } },
+                },
+                orderBy: { DueDate: 'asc' },
+            }),
+        ]);
+
+        const entries: ChequeCalendarEntry[] = [];
+
+        for (const c of customerCheques) {
+            entries.push({
+                Side: 'CUSTOMER',
+                ChequeId: c.Id,
+                Code: c.Code,
+                ChequeNumber: c.ChequeNumber,
+                Amount: c.Amount.toString(),
+                IssueDate: c.IssueDate.toISOString(),
+                DueDate: c.DueDate.toISOString(),
+                CounterpartyId: c.Customer.Id,
+                CounterpartyName: c.Customer.Name,
+                CounterpartyCode: c.Customer.Code,
+                BankName: c.BankName,
+                Notes: c.Notes,
+            });
+        }
+
+        for (const c of supplierCheques) {
+            entries.push({
+                Side: 'SUPPLIER',
+                ChequeId: c.Id,
+                Code: c.Code,
+                ChequeNumber: c.ChequeNumber,
+                Amount: c.Amount.toString(),
+                IssueDate: c.IssueDate.toISOString(),
+                DueDate: c.DueDate.toISOString(),
+                CounterpartyId: c.Supplier.Id,
+                CounterpartyName: c.Supplier.Name,
+                CounterpartyCode: c.Supplier.Code,
+                BankName: c.BankName,
+                Notes: c.Notes,
+            });
+        }
+
+        entries.sort(
+            (a, b) =>
+                new Date(a.DueDate).getTime() - new Date(b.DueDate).getTime(),
+        );
+
+        const customerTotal = customerCheques.reduce(
+            (s, c) => s.add(new Prisma.Decimal(c.Amount)),
+            new Prisma.Decimal(0),
+        );
+        const supplierTotal = supplierCheques.reduce(
+            (s, c) => s.add(new Prisma.Decimal(c.Amount)),
+            new Prisma.Decimal(0),
+        );
+        const netExposure = customerTotal.sub(supplierTotal);
+
+        // Group by day
+        const dayMap = new Map<
+            string,
+            { customer: Prisma.Decimal; supplier: Prisma.Decimal; count: number }
+        >();
+
+        const dayKey = (d: Date) => {
+            const x = new Date(d);
+            x.setHours(0, 0, 0, 0);
+            return x.toISOString().slice(0, 10);
+        };
+
+        for (const e of entries) {
+            const k = dayKey(new Date(e.DueDate));
+            const cur =
+                dayMap.get(k) ?? {
+                    customer: new Prisma.Decimal(0),
+                    supplier: new Prisma.Decimal(0),
+                    count: 0,
+                };
+            const amt = new Prisma.Decimal(e.Amount);
+            if (e.Side === 'CUSTOMER') cur.customer = cur.customer.add(amt);
+            else cur.supplier = cur.supplier.add(amt);
+            cur.count += 1;
+            dayMap.set(k, cur);
+        }
+
+        const byDay = Array.from(dayMap.entries())
+            .map(([day, v]) => ({
+                Day: day,
+                CustomerAmount: v.customer.toString(),
+                SupplierAmount: v.supplier.toString(),
+                Count: v.count,
+            }))
+            .sort((a, b) => a.Day.localeCompare(b.Day));
+
+        return {
+            From: from.toISOString(),
+            To: to.toISOString(),
+            CustomerTotal: customerTotal.toString(),
+            SupplierTotal: supplierTotal.toString(),
+            NetExposure: netExposure.toString(),
+            Entries: entries,
+            ByDay: byDay,
+        };
+    }
+
+    // ---------------------------------------------------------------
+    // Cash flow
+    // ---------------------------------------------------------------
+
+    async cashFlow(query: CashFlowQueryDto): Promise<CashFlowReport> {
+        let from: Date;
+        let to: Date;
+
+        // Session-scoped overrides the date range.
+        if (query.CashSessionId) {
+            const session = await this.prisma.cashSession.findUnique({
+                where: { Id: query.CashSessionId },
+                select: { OpenedAt: true, ClosedAt: true },
+            });
+            if (!session) throw new NotFoundException('Cash session not found');
+            from = session.OpenedAt;
+            to = session.ClosedAt ?? new Date();
+        } else {
+            const r = this.resolveRange(query.From, query.To);
+            from = r.from;
+            to = r.to;
+        }
+
+        const group: CashFlowGroup = query.GroupBy ?? 'day';
+
+        // Opening balance = net cash on hand BEFORE the window starts.
+        const beforeAgg = await this.prisma.cashLedger.aggregate({
+            where: { CreatedAt: { lt: from } },
+            _sum: { Amount: true },
+        });
+        const opening = new Prisma.Decimal(beforeAgg._sum.Amount ?? 0);
+
+        // Per-period, per-type aggregation.
+        type Row = { Period: Date; Type: string; Sum: string; Cnt: bigint };
+        const rows = await this.prisma.$queryRaw<Row[]>`
+            SELECT
+                DATE_TRUNC(${group}::text, "CreatedAt") AS "Period",
+                "Type"::text                            AS "Type",
+                COALESCE(SUM("Amount"), 0)::text        AS "Sum",
+                COUNT(*)::bigint                        AS "Cnt"
+            FROM "CashLedgers"
+            WHERE "CreatedAt" >= ${from}
+              AND "CreatedAt" <= ${to}
+            GROUP BY DATE_TRUNC(${group}::text, "CreatedAt"), "Type"
+            ORDER BY DATE_TRUNC(${group}::text, "CreatedAt") ASC
+        `;
+
+        // Pivot into per-period rows.
+        type Bucket = {
+            Period: Date;
+            types: Map<string, Prisma.Decimal>;
+            count: number;
+        };
+        const bucketMap = new Map<string, Bucket>();
+
+        for (const r of rows) {
+            const key = r.Period.toISOString();
+            const existing = bucketMap.get(key) ?? {
+                Period: r.Period,
+                types: new Map<string, Prisma.Decimal>(),
+                count: 0,
+            };
+            existing.types.set(r.Type, new Prisma.Decimal(r.Sum));
+            existing.count += Number(r.Cnt);
+            bucketMap.set(key, existing);
+        }
+
+        const sorted = Array.from(bucketMap.values()).sort(
+            (a, b) => a.Period.getTime() - b.Period.getTime(),
+        );
+
+        const ZERO = new Prisma.Decimal(0);
+        let running = opening;
+        const outRows: CashFlowRow[] = [];
+
+        const label = (d: Date): string => {
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            if (group === 'month') return `${yyyy}-${mm}`;
+            return `${yyyy}-${mm}-${dd}`;
+        };
+
+        for (const b of sorted) {
+            const g = (t: string) => b.types.get(t) ?? ZERO;
+            const rowOpening = running;
+
+            const inSale = g('SALE');
+            const inCreditPayment = g('CREDIT_PAYMENT');
+            const inCashIn = g('CASH_IN');
+            const inExpenseRev = g('EXPENSE_REVERSED');
+            const inCreditRev = g('CREDIT_PAYMENT_REVERSED');
+
+            const outSaleRefund = g('SALE_REFUND');
+            const outCashOut = g('CASH_OUT');
+            const outExpense = g('EXPENSE');
+
+            const net = inSale
+                .add(inCreditPayment)
+                .add(inCashIn)
+                .add(inExpenseRev)
+                .add(inCreditRev)
+                .add(outSaleRefund)
+                .add(outCashOut)
+                .add(outExpense);
+
+            const closing = rowOpening.add(net);
+            running = closing;
+
+            outRows.push({
+                Period: label(b.Period),
+                Opening: rowOpening.toString(),
+                In: {
+                    Sale: inSale.toString(),
+                    CreditPayment: inCreditPayment.toString(),
+                    CashIn: inCashIn.toString(),
+                    ExpenseReversed: inExpenseRev.toString(),
+                    CreditPaymentReversed: inCreditRev.toString(),
+                },
+                Out: {
+                    SaleRefund: outSaleRefund.toString(),
+                    CashOut: outCashOut.toString(),
+                    Expense: outExpense.toString(),
+                },
+                NetChange: net.toString(),
+                Closing: closing.toString(),
+                EntryCount: b.count,
+            });
+        }
+
+        return {
+            Group: group,
+            From: from.toISOString(),
+            To: to.toISOString(),
+            OpeningBalance: opening.toString(),
+            ClosingBalance: running.toString(),
+            Rows: outRows,
         };
     }
 }

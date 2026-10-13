@@ -12,6 +12,9 @@ import { ReportsService } from './reports.service';
 import { InventoryMovementQueryDto } from './dto/inventory-movement.dto';
 import { ProfitReportQueryDto } from './dto/profit-report.dto';
 import { StockValuationQueryDto } from './dto/stock-valuation.dto';
+import { ArAgingQueryDto } from './dto/ar-aging.dto';
+import { ChequeCalendarQueryDto } from './dto/cheque-calendar.dto';
+import { CashFlowQueryDto } from './dto/cash-flow.dto';
 
 
 @ApiTags('reports')
@@ -79,5 +82,41 @@ export class ReportsController {
     @ApiOkResponse({ description: 'Paginated movement rows + net change.' })
     inventoryMovement(@Query() query: InventoryMovementQueryDto) {
         return this.reports.inventoryMovement(query);
+    }
+
+    @Get('ar-aging')
+    @RequirePermissions('reports.aging')
+    @ApiOperation({
+        summary: 'Accounts receivable aging',
+        description:
+            'FIFO-bucketed outstanding balances per customer: Current / 31-60 / 61-90 / 91-180 / 180+. Payments apply to oldest invoices first.',
+    })
+    @ApiOkResponse({ description: 'Aging rows + totals.' })
+    arAging(@Query() query: ArAgingQueryDto) {
+        return this.reports.arAging(query);
+    }
+
+    @Get('cheque-calendar')
+    @RequirePermissions('reports.cheque_calendar')
+    @ApiOperation({
+        summary: 'Unified cheque calendar (customer + supplier)',
+        description:
+            'PENDING cheques due in the range, sorted by DueDate. Includes per-day totals and net exposure (customer − supplier).',
+    })
+    @ApiOkResponse({ description: 'Calendar entries + daily totals.' })
+    chequeCalendar(@Query() query: ChequeCalendarQueryDto) {
+        return this.reports.chequeCalendar(query);
+    }
+
+    @Get('cash-flow')
+    @RequirePermissions('reports.cashflow')
+    @ApiOperation({
+        summary: 'Cash flow by day / week / month',
+        description:
+            'Opening balance, cash in (by source), cash out (by source), net change, closing. Opening for the first period is the real cumulative cash position before the window.',
+    })
+    @ApiOkResponse({ description: 'Cash flow rows.' })
+    cashFlow(@Query() query: CashFlowQueryDto) {
+        return this.reports.cashFlow(query);
     }
 }

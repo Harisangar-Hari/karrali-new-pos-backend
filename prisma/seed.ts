@@ -104,6 +104,7 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'reports.aging', Description: 'AR aging reports' },
     { Code: 'reports.z_report', Description: 'Z-report / day close' },
     { Code: 'reports.cheque_calendar', Description: 'Cheque calendar' },
+    { Code: 'reports.cashflow', Description: 'Cash flow / drawer movement report' },
 
     // --- Settings ---
     { Code: 'settings.view', Description: 'View settings' },
