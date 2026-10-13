@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "CashLedgerType" ADD VALUE 'EXPENSE_REVERSED';

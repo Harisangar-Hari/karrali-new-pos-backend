@@ -1,0 +1,5 @@
+-- AlterEnum
+ALTER TYPE "CashLedgerType" ADD VALUE 'CREDIT_PAYMENT_REVERSED';
+
+-- AlterEnum
+ALTER TYPE "CustomerLedgerType" ADD VALUE 'PAYMENT_REVERSED';

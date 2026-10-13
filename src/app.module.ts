@@ -23,6 +23,16 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { PurchasesModule } from './modules/purchases/purchases.module';
 import { SupplierPaymentsModule } from './modules/supplier-payments/supplier-payments.module';
 import { SupplierChequesModule } from './modules/supplier-cheques/supplier-cheques.module';
+import { SalesModule } from './modules/sales/sales.module';
+import { SaleReturnsModule } from './modules/sale-returns/sale-returns.module';
+import { CustomerChequesModule } from './modules/customer-cheques/customer-cheques.module';
+import { CreditPaymentsModule } from './modules/credit-payments/credit-payments.module';
+import { CashSessionsModule } from './modules/cash-sessions/cash-sessions.module';
+import { BankAccountsModule } from './modules/bank-accounts/bank-accounts.module';
+import { ExpenseCategoriesModule } from './modules/expense-categories/expense-categories.module';
+import { ExpensesModule } from './modules/expenses/expenses.module';
+import { CashMovementsModule } from './modules/cash-movements/cash-movements.module';
+import { ReportsModule } from './modules/reports/reports.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -59,6 +69,16 @@ import { SupplierChequesModule } from './modules/supplier-cheques/supplier-chequ
     PurchasesModule,
     SupplierPaymentsModule,
     SupplierChequesModule,
+    SalesModule,
+    SaleReturnsModule,
+    CustomerChequesModule,
+    CreditPaymentsModule,
+    CashSessionsModule,
+    BankAccountsModule,
+    ExpenseCategoriesModule,
+    ExpensesModule,
+    CashMovementsModule,
+    ReportsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

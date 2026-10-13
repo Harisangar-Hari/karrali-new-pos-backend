@@ -31,8 +31,10 @@ model User {
   CreatedByUserId String?   @db.Uuid
   UpdatedByUserId String?   @db.Uuid
 
-  Sessions  Session[]
-  UserRoles UserRole[]
+  Sessions        Session[]
+  UserRoles       UserRole[]
+  Sales           Sale[]        @relation("SaleCashier")
+  CashierSessions CashSession[] @relation("CashierSessions")
 
   @@index([IsActive])
   @@index([DeletedAt])
@@ -173,6 +175,7 @@ model Warehouse {
   WarehouseStocks WarehouseStock[]
   StockMovements  StockMovement[]
   Purchases       Purchase[]
+  Sales           Sale[]
 
   @@index([IsActive])
   @@index([DeletedAt])
@@ -186,11 +189,13 @@ model Terminal {
   WarehouseId String  @db.Uuid
   IsActive    Boolean @default(true)
 
-  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
-  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
-  DeletedAt       DateTime? @db.Timestamptz(6)
-  CreatedByUserId String?   @db.Uuid
-  UpdatedByUserId String?   @db.Uuid
+  CreatedAt       DateTime      @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime      @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime?     @db.Timestamptz(6)
+  CreatedByUserId String?       @db.Uuid
+  UpdatedByUserId String?       @db.Uuid
+  Sales           Sale[]
+  CashSessions    CashSession[]
 
   Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
 
@@ -280,6 +285,8 @@ model Product {
   WarehouseStocks WarehouseStock[]
   StockMovements  StockMovement[]
   PurchaseItems   PurchaseItem[]
+  SaleItems       SaleItem[]
+  SaleReturnItems SaleReturnItem[]
 
   @@index([CategoryId])
   @@index([BrandId])
@@ -339,6 +346,8 @@ model StockMovement {
   @@index([SaleReturnId])
   @@index([PurchaseId])
   @@index([CreatedAt])
+  @@index([ProductId, CreatedAt])
+  @@index([Type, CreatedAt])
   @@map("StockMovements")
 }
 
@@ -360,10 +369,17 @@ enum CustomerLedgerType {
   SALE
   SALE_RETURN
   PAYMENT
+  PAYMENT_REVERSED
   CHEQUE
   CHEQUE_BOUNCED
+  CHEQUE_VOIDED
   ADJUSTMENT
   WRITE_OFF
+}
+
+enum CreditPaymentMethod {
+  CASH
+  CHEQUE
 }
 
 model CodeSequence {
@@ -403,7 +419,11 @@ model Customer {
   CreatedByUserId String?   @db.Uuid
   UpdatedByUserId String?   @db.Uuid
 
-  LedgerEntries CustomerLedger[]
+  LedgerEntries   CustomerLedger[]
+  Sales           Sale[]
+  SaleReturns     SaleReturn[]
+  CustomerCheques CustomerCheque[]
+  CreditPayments  CreditPayment[]
 
   @@index([Name])
   @@index([Phone])
@@ -439,6 +459,7 @@ model CustomerLedger {
   @@index([CreatedAt])
   @@index([SaleId])
   @@index([CreditPaymentId])
+  @@index([CustomerId, CreatedAt])
   @@map("CustomerLedgers")
 }
 
@@ -542,6 +563,7 @@ model Purchase {
   @@index([InvoiceDate])
   @@index([DueDate]) // AP aging
   @@index([CreatedAt])
+  @@index([Status, DueDate])
   @@map("Purchases")
 }
 
@@ -636,4 +658,482 @@ model SupplierCheque {
   @@index([DueDate]) // cheque calendar (Phase 6)
   @@index([ChequeNumber])
   @@map("SupplierCheques")
+}
+
+// =============================================================
+// PHASE 4 — SALES, RETURNS, CREDIT PAYMENTS, CUSTOMER CHEQUES, CASH
+// =============================================================
+enum SaleStatus {
+  COMPLETED
+  PARTIALLY_RETURNED
+  FULLY_RETURNED
+  CANCELLED
+}
+
+enum SalePaymentMethod {
+  CASH
+  CARD
+  CREDIT
+  CHEQUE
+}
+
+enum SaleReturnRefundMethod {
+  CASH // drawer -Amount
+  CREDIT // customer balance -Amount (may go negative = store credit)
+}
+
+enum CustomerChequeStatus {
+  PENDING
+  CLEARED
+  BOUNCED
+  VOIDED
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum CashLedgerType {
+  SALE // cash portion of a sale
+  SALE_REFUND // cash refund on a return or cancel
+  CREDIT_PAYMENT // customer paid down credit with cash
+  CREDIT_PAYMENT_REVERSED
+  CASH_IN // manual entry
+  CASH_OUT // manual entry
+  EXPENSE // Phase 5
+  EXPENSE_REVERSED
+  BANK_DEPOSIT // moving cash out to bank
+}
+
+model Sale {
+  Id            String @id @default(uuid()) @db.Uuid
+  InvoiceNumber String @unique // e.g. MAIN-01-000001, per-terminal
+
+  TerminalId  String  @db.Uuid
+  WarehouseId String  @db.Uuid
+  CashierId   String  @db.Uuid
+  CustomerId  String? @db.Uuid // null = walk-in
+
+  Subtotal       Decimal @db.Decimal(18, 4)
+  DiscountAmount Decimal @default(0) @db.Decimal(18, 4)
+  TaxAmount      Decimal @default(0) @db.Decimal(18, 4)
+  TotalAmount    Decimal @db.Decimal(18, 4)
+  // Cached payment split — source of truth is SalePayments, but these
+  // make payment-method reports a single-index scan.
+  CashAmount     Decimal @default(0) @db.Decimal(18, 4)
+  CardAmount     Decimal @default(0) @db.Decimal(18, 4)
+  CreditAmount   Decimal @default(0) @db.Decimal(18, 4)
+  ChequeAmount   Decimal @default(0) @db.Decimal(18, 4)
+
+  PaidAmount     Decimal @default(0) @db.Decimal(18, 4) // cash + card + credit-paid
+  RefundedAmount Decimal @default(0) @db.Decimal(18, 4) // sum of SaleReturn totals
+
+  Status            SaleStatus @default(COMPLETED)
+  Notes             String?
+  CancelledAt       DateTime?  @db.Timestamptz(6)
+  CancelledByUserId String?    @db.Uuid
+  CancelReason      String?
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Terminal  Terminal  @relation(fields: [TerminalId], references: [Id], onDelete: Restrict)
+  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+  Cashier   User      @relation("SaleCashier", fields: [CashierId], references: [Id], onDelete: Restrict)
+  Customer  Customer? @relation(fields: [CustomerId], references: [Id], onDelete: SetNull)
+
+  Items    SaleItem[]
+  Payments SalePayment[]
+  Returns  SaleReturn[]
+  Cheques  CustomerCheque[]
+
+  @@index([TerminalId])
+  @@index([WarehouseId])
+  @@index([CashierId])
+  @@index([CustomerId])
+  @@index([Status])
+  @@index([CreatedAt])
+  @@index([CashAmount])
+  @@index([CardAmount])
+  @@index([CreditAmount])
+  @@index([ChequeAmount])
+  @@index([Status, CreatedAt])
+  @@index([TerminalId, CreatedAt])
+  @@index([CustomerId, CreatedAt])
+  @@map("Sales")
+}
+
+model SaleItem {
+  Id        String @id @default(uuid()) @db.Uuid
+  SaleId    String @db.Uuid
+  ProductId String @db.Uuid
+
+  Qty       Int
+  UnitPrice Decimal  @db.Decimal(18, 4)
+  Discount  Decimal  @default(0) @db.Decimal(18, 4) // % off line
+  TaxRate   Decimal? @db.Decimal(5, 2)
+
+  LineSubtotal Decimal @db.Decimal(18, 4) // Qty * UnitPrice
+  LineDiscount Decimal @default(0) @db.Decimal(18, 4)
+  LineTax      Decimal @default(0) @db.Decimal(18, 4)
+  LineTotal    Decimal @db.Decimal(18, 4)
+
+  ReturnedQty Int @default(0) // cache; validated against Qty on return
+
+  Notes     String?
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  Sale        Sale             @relation(fields: [SaleId], references: [Id], onDelete: Cascade)
+  Product     Product          @relation(fields: [ProductId], references: [Id], onDelete: Restrict)
+  ReturnItems SaleReturnItem[]
+
+  @@index([SaleId])
+  @@index([ProductId])
+  @@map("SaleItems")
+}
+
+model SalePayment {
+  Id     String            @id @default(uuid()) @db.Uuid
+  SaleId String            @db.Uuid
+  Method SalePaymentMethod
+  Amount Decimal           @db.Decimal(18, 4) // always positive
+
+  // Set only when Method = CHEQUE. Unique — a cheque maps to one payment.
+  ChequeId String? @unique @db.Uuid
+
+  // Set when the payment was reversed (cheque bounced/voided on a cheque
+  // payment; partial cancellation on a cash payment — future).
+  ReversedAt       DateTime? @db.Timestamptz(6)
+  ReversedByUserId String?   @db.Uuid
+  ReversalReason   String?
+
+  Notes           String?
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Sale   Sale            @relation(fields: [SaleId], references: [Id], onDelete: Cascade)
+  Cheque CustomerCheque? @relation("SalePaymentCheque", fields: [ChequeId], references: [Id], onDelete: SetNull)
+
+  @@index([SaleId])
+  @@index([Method])
+  @@index([ReversedAt])
+  @@index([Method, CreatedAt])
+  @@map("SalePayments")
+}
+
+model SaleReturn {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // RET-00001
+
+  SaleId     String  @db.Uuid
+  CustomerId String? @db.Uuid // copied from sale
+
+  RefundMethod SaleReturnRefundMethod
+  Subtotal     Decimal                @db.Decimal(18, 4)
+  TaxAmount    Decimal                @default(0) @db.Decimal(18, 4)
+  RefundAmount Decimal                @db.Decimal(18, 4) // = Subtotal + TaxAmount
+
+  Notes String?
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Sale     Sale             @relation(fields: [SaleId], references: [Id], onDelete: Restrict)
+  Customer Customer?        @relation(fields: [CustomerId], references: [Id], onDelete: SetNull)
+  Items    SaleReturnItem[]
+
+  @@index([SaleId])
+  @@index([CustomerId])
+  @@index([CreatedAt])
+  @@map("SaleReturns")
+}
+
+model SaleReturnItem {
+  Id           String @id @default(uuid()) @db.Uuid
+  SaleReturnId String @db.Uuid
+  SaleItemId   String @db.Uuid
+  ProductId    String @db.Uuid
+
+  Qty       Int // positive; added back to stock
+  UnitPrice Decimal  @db.Decimal(18, 4) // snapshot from SaleItem
+  TaxRate   Decimal? @db.Decimal(5, 2)
+
+  LineSubtotal Decimal @db.Decimal(18, 4)
+  LineTax      Decimal @default(0) @db.Decimal(18, 4)
+  RefundAmount Decimal @db.Decimal(18, 4) // = Subtotal + Tax
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  SaleReturn SaleReturn @relation(fields: [SaleReturnId], references: [Id], onDelete: Cascade)
+  SaleItem   SaleItem   @relation(fields: [SaleItemId], references: [Id], onDelete: Restrict)
+  Product    Product    @relation(fields: [ProductId], references: [Id], onDelete: Restrict)
+
+  @@index([SaleReturnId])
+  @@index([SaleItemId])
+  @@index([ProductId])
+  @@map("SaleReturnItems")
+}
+
+model CustomerCheque {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // RCHQ-00001
+
+  CustomerId String  @db.Uuid
+  SaleId     String? @db.Uuid // optional link — a cheque may cover several sales or pure debt
+
+  ChequeNumber String
+  BankName     String?
+  BankBranch   String?
+  Amount       Decimal @db.Decimal(18, 4)
+
+  IssueDate DateTime @db.Timestamptz(6)
+  DueDate   DateTime @db.Timestamptz(6) // for the "cheques due" calendar
+
+  Status       CustomerChequeStatus @default(PENDING)
+  ClearedAt    DateTime?            @db.Timestamptz(6)
+  BouncedAt    DateTime?            @db.Timestamptz(6)
+  BounceReason String?
+
+  Notes String?
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Customer      Customer       @relation(fields: [CustomerId], references: [Id], onDelete: Restrict)
+  Sale          Sale?          @relation(fields: [SaleId], references: [Id], onDelete: SetNull)
+  SalePayment   SalePayment?   @relation("SalePaymentCheque")
+  CreditPayment CreditPayment? @relation("CreditPaymentCheque")
+
+  @@index([CustomerId])
+  @@index([SaleId])
+  @@index([Status])
+  @@index([DueDate])
+  @@index([ChequeNumber])
+  @@map("CustomerCheques")
+}
+
+model CreditPayment {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // CPAY-00001
+
+  CustomerId String              @db.Uuid
+  Method     CreditPaymentMethod
+  Amount     Decimal             @db.Decimal(18, 4) // positive
+
+  PaidAt DateTime @db.Timestamptz(6)
+
+  // Set only when Method = CHEQUE.
+  ChequeId String? @unique @db.Uuid
+
+  // Set when reversed (cheque bounced/voided).
+  ReversedAt       DateTime? @db.Timestamptz(6)
+  ReversedByUserId String?   @db.Uuid
+  ReversalReason   String?
+
+  Notes           String?
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Customer Customer        @relation(fields: [CustomerId], references: [Id], onDelete: Restrict)
+  Cheque   CustomerCheque? @relation("CreditPaymentCheque", fields: [ChequeId], references: [Id], onDelete: SetNull)
+
+  @@index([CustomerId])
+  @@index([Method])
+  @@index([PaidAt])
+  @@index([ReversedAt])
+  @@map("CreditPayments")
+}
+
+model CashSession {
+  Id String @id @default(uuid()) @db.Uuid
+
+  TerminalId String @db.Uuid
+  CashierId  String @db.Uuid
+
+  OpenedAt     DateTime @db.Timestamptz(6)
+  StartingCash Decimal  @db.Decimal(18, 4)
+
+  ClosedAt     DateTime? @db.Timestamptz(6)
+  CountedCash  Decimal?  @db.Decimal(18, 4)
+  ExpectedCash Decimal?  @db.Decimal(18, 4) // snapshot at close
+  Difference   Decimal?  @db.Decimal(18, 4) // Counted − Expected
+
+  Status CashSessionStatus @default(OPEN)
+  Notes  String?
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  ClosedByUserId  String?  @db.Uuid
+  CreatedByUserId String?  @db.Uuid
+
+  Terminal  Terminal       @relation(fields: [TerminalId], references: [Id], onDelete: Restrict)
+  Cashier   User           @relation("CashierSessions", fields: [CashierId], references: [Id], onDelete: Restrict)
+  Entries   CashLedger[]
+  Movements CashMovement[]
+
+  @@index([TerminalId])
+  @@index([CashierId])
+  @@index([Status])
+  @@index([OpenedAt])
+  @@map("CashSessions")
+}
+
+model CashLedger {
+  Id String @id @default(uuid()) @db.Uuid
+
+  CashSessionId String? @db.Uuid // nullable — supports un-sessioned entries
+
+  Type   CashLedgerType
+  Amount Decimal        @db.Decimal(18, 4) // signed
+
+  // Reference to the source entity (whichever applies)
+  SaleId           String? @db.Uuid
+  SaleReturnId     String? @db.Uuid
+  CreditPaymentId  String? @db.Uuid
+  CustomerChequeId String? @db.Uuid
+  ExpenseId        String? @db.Uuid
+
+  Notes           String?
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  CashSession CashSession? @relation(fields: [CashSessionId], references: [Id], onDelete: SetNull)
+
+  @@index([CashSessionId])
+  @@index([Type])
+  @@index([CreatedAt])
+  @@index([SaleId])
+  @@index([SaleReturnId])
+  @@index([CreditPaymentId])
+  @@index([Type, CreatedAt])
+  @@map("CashLedgers")
+}
+
+// =============================================================
+// PHASE 5 — BANK ACCOUNTS, EXPENSE CATEGORIES, EXPENSES, CASH MOVEMENTS
+// =============================================================
+
+enum ExpensePaymentMethod {
+  CASH
+  BANK
+}
+
+enum CashMovementType {
+  CASH_IN // cash added to drawer
+  CASH_OUT // cash removed from drawer
+}
+
+model BankAccount {
+  Id            String  @id @default(uuid()) @db.Uuid
+  Name          String // our label: "Operating Account"
+  BankName      String // "Commercial Bank"
+  AccountNumber String  @unique
+  Branch        String?
+  Swift         String?
+  IsDefault     Boolean @default(false)
+  IsActive      Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Expenses      Expense[]
+  CashMovements CashMovement[]
+
+  @@index([IsActive])
+  @@index([DeletedAt])
+  @@map("BankAccounts")
+}
+
+model ExpenseCategory {
+  Id       String  @id @default(uuid()) @db.Uuid
+  Name     String  @unique
+  IsActive Boolean @default(true)
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Expenses Expense[]
+
+  @@index([DeletedAt])
+  @@map("ExpenseCategories")
+}
+
+model Expense {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // EXP-00001
+
+  CategoryId String @db.Uuid
+
+  Amount        Decimal              @db.Decimal(18, 4) // always positive
+  Method        ExpensePaymentMethod
+  BankAccountId String?              @db.Uuid // required when Method = BANK
+
+  Description String
+  Payee       String? // free-form; may not be a registered Supplier
+  PaidAt      DateTime @db.Timestamptz(6)
+
+  Notes String?
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Category    ExpenseCategory @relation(fields: [CategoryId], references: [Id], onDelete: Restrict)
+  BankAccount BankAccount?    @relation(fields: [BankAccountId], references: [Id], onDelete: Restrict)
+
+  @@index([CategoryId])
+  @@index([BankAccountId])
+  @@index([Method])
+  @@index([PaidAt])
+  @@index([DeletedAt])
+  @@index([Method, PaidAt])
+  @@map("Expenses")
+}
+
+model CashMovement {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // CM-00001
+
+  Type   CashMovementType
+  Amount Decimal          @db.Decimal(18, 4) // always positive; direction via Type
+
+  Reason String
+  Notes  String?
+
+  // Optional — set when this movement links drawer ↔ bank.
+  //   CASH_IN  + BankAccountId = withdrawal from bank into drawer
+  //   CASH_OUT + BankAccountId = deposit from drawer into bank
+  // Null when it's a pure drawer movement (change fund, owner draw, etc.).
+  BankAccountId String? @db.Uuid
+
+  // Session link — nullable; close() attaches retroactively if null.
+  CashSessionId String? @db.Uuid
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime @updatedAt @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+  UpdatedByUserId String?  @db.Uuid
+
+  BankAccount BankAccount? @relation(fields: [BankAccountId], references: [Id], onDelete: Restrict)
+  CashSession CashSession? @relation(fields: [CashSessionId], references: [Id], onDelete: SetNull)
+
+  @@index([Type])
+  @@index([BankAccountId])
+  @@index([CashSessionId])
+  @@index([CreatedAt])
+  @@map("CashMovements")
 }

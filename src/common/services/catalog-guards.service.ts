@@ -83,4 +83,41 @@ export class CatalogGuardsService {
             );
         }
     }
+
+    async assertExpenseCategoryUsable(categoryId: string): Promise<void> {
+        const cat = await this.prisma.expenseCategory.findFirst({
+            where: { Id: categoryId, DeletedAt: null },
+            select: { IsActive: true, Name: true },
+        });
+
+        if (!cat) {
+            throw new BadRequestException(
+                'Expense category not found or has been deleted',
+            );
+        }
+        if (!cat.IsActive) {
+            throw new BadRequestException(
+                `Expense category "${cat.Name}" is inactive — reactivate it first`,
+            );
+        }
+    }
+
+    async assertBankAccountUsable(bankAccountId: string): Promise<void> {
+        const account = await this.prisma.bankAccount.findFirst({
+            where: { Id: bankAccountId, DeletedAt: null },
+            select: { IsActive: true, Name: true },
+        });
+
+        if (!account) {
+            throw new BadRequestException(
+                'Bank account not found or has been deleted',
+            );
+        }
+        if (!account.IsActive) {
+            throw new BadRequestException(
+                `Bank account "${account.Name}" is inactive — reactivate it first`,
+            );
+        }
+    }
+
 }

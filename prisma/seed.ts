@@ -72,11 +72,17 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'credit_payments.view', Description: 'View credit payments' },
     { Code: 'credit_payments.create', Description: 'Create credit payments' },
     { Code: 'credit_payments.clear', Description: 'Clear/bounce customer cheques' },
+    { Code: 'credit_payments.reverse', Description: 'Reverse a recorded credit payment' },
 
     { Code: 'quotations.view', Description: 'View quotations' },
     { Code: 'quotations.create', Description: 'Create quotations' },
     { Code: 'quotations.update', Description: 'Update quotations' },
     { Code: 'quotations.convert', Description: 'Convert quotations into sales' },
+    { Code: 'customer_cheques.view', Description: 'View customer cheques' },
+    { Code: 'customer_cheques.create', Description: 'Record customer cheques (single or bulk)' },
+    { Code: 'customer_cheques.clear', Description: 'Mark customer cheques as cleared' },
+    { Code: 'customer_cheques.bounce', Description: 'Mark customer cheques as bounced' },
+    { Code: 'customer_cheques.void', Description: 'Void a pending customer cheque' },
 
     // --- Cash ---
     { Code: 'cash_sessions.view', Description: 'View cash sessions' },
@@ -106,6 +112,17 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     //warehouses and terminals
     { Code: 'warehouses.view', Description: 'View warehouses' },
     { Code: 'terminals.view', Description: 'View terminals' },
+
+    // --- Cash movements ---
+    { Code: 'cash_movements.view', Description: 'View manual cash in/out records' },
+    { Code: 'cash_movements.create', Description: 'Record manual cash in/out' },
+    { Code: 'cash_movements.delete', Description: 'Delete a manual cash movement' },
+
+    // --- Expenses ---
+    { Code: 'expense_categories.view', Description: 'View expense categories' },
+    { Code: 'expense_categories.manage', Description: 'Manage expense categories' },
+    { Code: 'bank_accounts.view', Description: 'View bank accounts' },
+    { Code: 'bank_accounts.manage', Description: 'Manage bank accounts' },
 ];
 
 // =============================================================
