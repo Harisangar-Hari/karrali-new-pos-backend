@@ -84,4 +84,22 @@ export class QueryProductDto extends PaginationDto {
     @IsOptional()
     @IsIn(['asc', 'desc'])
     override sortOrder: 'asc' | 'desc' = 'desc';
+
+    @ApiPropertyOptional({
+        format: 'uuid',
+        description:
+            'Scope stock quantities to a single warehouse. The list will still include products with 0 stock in that warehouse unless `inStock=true` is also set.',
+    })
+    @IsOptional()
+    @IsUUID()
+    WarehouseId?: string;
+
+    @ApiPropertyOptional({
+        description:
+            'Only return products with non-zero stock. Combined with WarehouseId, scopes to that warehouse; without WarehouseId, means "anywhere".',
+    })
+    @IsOptional()
+    @Transform(toBool)
+    @IsBoolean()
+    inStock?: boolean;
 }

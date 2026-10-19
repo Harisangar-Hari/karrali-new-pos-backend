@@ -39,11 +39,14 @@ type ProductDetailRow = Prisma.ProductGetPayload<{
 
 @Injectable()
 export class ProductsService {
-    constructor(private readonly prisma: PrismaService, private readonly audit: AuditService,) { }
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly audit: AuditService,
+    ) {}
 
     async list(
         query: QueryProductDto,
-    ): Promise<PaginatedResponse<ProductListRow>> {
+    ): Promise<PaginatedResponse<unknown>> {
         const where: Prisma.ProductWhereInput = {};
 
         if (!query.includeDeleted) where.DeletedAt = null;
@@ -57,6 +60,22 @@ export class ProductsService {
             if (query.maxPrice !== undefined) where.Price.lte = query.maxPrice;
         }
 
+        // "In stock" filter at the product level. When combined with
+        // WarehouseId, scopes to that warehouse's stock. Alone, means
+        // "has non-zero stock in any warehouse".
+        if (query.inStock) {
+            where.WarehouseStocks = query.WarehouseId
+                ? {
+                      some: {
+                          WarehouseId: query.WarehouseId,
+                          Qty: { gt: 0 },
+                      },
+                  }
+                : {
+                      some: { Qty: { gt: 0 } },
+                  };
+        }
+
         if (query.search) {
             where.OR = [
                 { Name: { contains: query.search, mode: 'insensitive' } },
@@ -65,11 +84,6 @@ export class ProductsService {
             ];
         }
 
-        // lowStock is applied via a post-filter because Prisma can't
-        // compare two columns across a relation. We fetch a wider page
-        // and filter, then trim to the requested page. This is imperfect
-        // for very large catalogs — proper solution is a SQL view or
-        // a materialized "TotalStock" cache column. Flag for later.
         if (query.lowStock) {
             return this.listLowStock(query, where);
         }
@@ -78,9 +92,22 @@ export class ProductsService {
             [query.sortBy ?? 'CreatedAt']: query.sortOrder,
         };
 
-        return paginate<ProductListRow>(
+        // WarehouseStocks include is dynamic: filter to a single warehouse
+        // when WarehouseId is set, so the response carries only that
+        // warehouse's qty per product.
+        const include = {
+            ...PRODUCT_LIST_INCLUDE,
+            WarehouseStocks: {
+                select: { WarehouseId: true, Qty: true },
+                ...(query.WarehouseId
+                    ? { where: { WarehouseId: query.WarehouseId } }
+                    : {}),
+            },
+        } as const;
+
+        return paginate(
             this.prisma.product,
-            { where, orderBy, include: PRODUCT_LIST_INCLUDE },
+            { where, orderBy, include },
             query.page,
             query.limit,
         );
@@ -178,9 +205,9 @@ export class ProductsService {
                     Metadata:
                         initialQty > 0 && initialWarehouseId
                             ? {
-                                InitialQty: initialQty,
-                                InitialWarehouseId: initialWarehouseId,
-                            }
+                                  InitialQty: initialQty,
+                                  InitialWarehouseId: initialWarehouseId,
+                              }
                             : undefined,
                 },
                 tx,
@@ -353,11 +380,6 @@ export class ProductsService {
         }
     }
 
-    /**
-     * SKU/Barcode are unique on the Product table but nullable. Prisma's
-     * `findUnique` handles nullable unique fields but throws on null, so
-     * callers must ensure the value is non-null before calling.
-     */
     private async assertUniqueField(
         field: 'SKU' | 'Barcode',
         value: string,
@@ -376,16 +398,14 @@ export class ProductsService {
     }
 
     /**
-     * Low-stock list — Prisma can't compare Product.ReorderLevel against
-     * WarehouseStock.Qty across the relation. We pull a page-sized batch
-     * ordered by CreatedAt, filter in memory, and return. Correct but
-     * O(catalog) when the "match rate" is low. Acceptable for now;
-     * replace with a SQL view / cached TotalStock column in Phase 6.
+     * Low-stock filter. When WarehouseId is set, "low stock" means
+     * low stock IN THAT WAREHOUSE — the warehouse-scoped qty is compared
+     * to the product's reorder level.
      */
     private async listLowStock(
         query: QueryProductDto,
         where: Prisma.ProductWhereInput,
-    ): Promise<PaginatedResponse<ProductListRow>> {
+    ): Promise<PaginatedResponse<unknown>> {
         const orderBy: Prisma.ProductOrderByWithRelationInput = {
             [query.sortBy ?? 'CreatedAt']: query.sortOrder,
         };
@@ -394,8 +414,14 @@ export class ProductsService {
             where,
             orderBy,
             include: {
-                ...PRODUCT_LIST_INCLUDE,
-                WarehouseStocks: { select: { Qty: true } },
+                Category: { select: { Id: true, Name: true } },
+                Brand: { select: { Id: true, Name: true } },
+                WarehouseStocks: {
+                    select: { WarehouseId: true, Qty: true },
+                    ...(query.WarehouseId
+                        ? { where: { WarehouseId: query.WarehouseId } }
+                        : {}),
+                },
             },
         });
 
@@ -405,10 +431,7 @@ export class ProductsService {
         });
 
         const skip = (query.page - 1) * query.limit;
-        const data = filtered
-            .slice(skip, skip + query.limit)
-            // strip WarehouseStocks to keep response shape consistent
-            .map(({ WarehouseStocks: _ws, ...rest }) => rest as ProductListRow);
+        const data = filtered.slice(skip, skip + query.limit);
 
         const total = filtered.length;
         const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
