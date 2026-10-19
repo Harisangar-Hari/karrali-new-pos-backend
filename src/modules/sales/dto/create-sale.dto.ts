@@ -1,12 +1,15 @@
+//src/modules/sales/dto/create-sale.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
     ArrayMinSize,
     IsArray,
+    IsInt,
     IsOptional,
     IsString,
     IsUUID,
     MaxLength,
+    Min,
     ValidateNested,
 } from 'class-validator';
 import { SaleItemDto } from './sale-item.dto';
@@ -49,4 +52,15 @@ export class CreateSaleDto {
     @ValidateNested({ each: true })
     @Type(() => SalePaymentDto)
     Payments!: SalePaymentDto[];
+
+     @ApiPropertyOptional({
+        minimum: 0,
+        description:
+            'Loyalty points to redeem on this sale. Requires CustomerId. Validated against balance, MinRedeem, and MaxRedeemPercent caps.',
+    })
+    @IsOptional()
+    @Type(() => Number)
+    @IsInt()
+    @Min(0)
+    RedeemPoints?: number;
 }

@@ -1,3 +1,4 @@
+//src/modules/credit-payments/dto/reverse-credit-payment.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 

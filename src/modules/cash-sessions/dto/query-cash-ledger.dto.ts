@@ -1,3 +1,4 @@
+//src/modules/cash-sessions/dto/query-cash-ledger.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { CashLedgerType } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

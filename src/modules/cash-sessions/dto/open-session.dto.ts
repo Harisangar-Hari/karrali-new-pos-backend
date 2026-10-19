@@ -1,3 +1,4 @@
+//src/modules/cash-sessions/dto/open-session.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {

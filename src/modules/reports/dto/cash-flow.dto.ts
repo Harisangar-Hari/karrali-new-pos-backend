@@ -1,3 +1,4 @@
+//src/modules/reports/dto/cash-flow.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
 import { DateRangeDto } from './date-range.dto';

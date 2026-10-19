@@ -1,3 +1,4 @@
+//src/modules/settings/dto/query-setting.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 

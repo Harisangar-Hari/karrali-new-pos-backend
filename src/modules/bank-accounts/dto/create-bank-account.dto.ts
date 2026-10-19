@@ -1,3 +1,4 @@
+//src/modules/bank-accounts/dto/create-bank-account.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsBoolean,

@@ -1,3 +1,4 @@
+//src/modules/stock/dto/adjust-stock.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { StockMovementType } from '@prisma/client';
 import {

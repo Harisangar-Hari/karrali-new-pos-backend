@@ -1,3 +1,4 @@
+//src/modules/cash-movements/dto/query-cash-movement.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { CashMovementType } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

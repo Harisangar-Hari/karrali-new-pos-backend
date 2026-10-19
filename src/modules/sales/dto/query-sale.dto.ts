@@ -1,3 +1,4 @@
+//src/modules/sales/dto/query-sale.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { SaleStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';

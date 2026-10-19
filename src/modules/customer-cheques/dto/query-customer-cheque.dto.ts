@@ -1,3 +1,4 @@
+//src/modules/customer-cheques/dto/query-customer-cheque.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { CustomerChequeStatus } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

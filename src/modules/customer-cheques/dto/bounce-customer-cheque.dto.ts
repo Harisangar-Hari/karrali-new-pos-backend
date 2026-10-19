@@ -1,3 +1,4 @@
+//src/modules/customer-cheques/dto/bounce-customer-cheque.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 

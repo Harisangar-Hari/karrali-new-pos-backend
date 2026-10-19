@@ -1,3 +1,4 @@
+//src/modules/credit-payments/dto/create-credit-payment.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CreditPaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';

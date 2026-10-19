@@ -4,6 +4,10 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 
+import { APP_FILTER } from '@nestjs/core';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
+import { HealthModule } from './modules/health/health.module';
+
 import configuration from './config/configuration';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -33,6 +37,9 @@ import { ExpenseCategoriesModule } from './modules/expense-categories/expense-ca
 import { ExpensesModule } from './modules/expenses/expenses.module';
 import { CashMovementsModule } from './modules/cash-movements/cash-movements.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { QuotationsModule } from './modules/quotations/quotations.module';
+import { LoyaltyModule } from './modules/loyalty/loyalty.module';
+import { UsersModule } from './modules/users/users.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -79,11 +86,19 @@ import { ReportsModule } from './modules/reports/reports.module';
     ExpensesModule,
     CashMovementsModule,
     ReportsModule,
+    QuotationsModule,
+    LoyaltyModule,
+    UsersModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    {
+      provide: APP_FILTER,
+      useClass: PrismaExceptionFilter,
+    },
   ],
 })
 export class AppModule { }

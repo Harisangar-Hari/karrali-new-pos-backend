@@ -1,3 +1,4 @@
+//src/modules/supplier-payments/dto/create-supplier-payment.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { SupplierPaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';

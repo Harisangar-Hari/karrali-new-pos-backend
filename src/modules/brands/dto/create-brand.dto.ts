@@ -1,3 +1,4 @@
+//src/modules/brands/dto/create-brand.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsBoolean,

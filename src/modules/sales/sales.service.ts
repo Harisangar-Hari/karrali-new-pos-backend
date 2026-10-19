@@ -15,6 +15,7 @@ import { StockService } from '../stock/stock.service';
 import { CancelSaleDto } from './dto/cancel-sale.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { QuerySaleDto } from './dto/query-sale.dto';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 const SALE_LIST_INCLUDE = {
     Terminal: { select: { Id: true, Name: true, Code: true } },
@@ -56,7 +57,8 @@ export class SalesService {
         private readonly prisma: PrismaService,
         private readonly audit: AuditService,
         private readonly stock: StockService,
-    ) {}
+        private readonly loyalty: LoyaltyService,
+    ) { }
 
     // ---------------------------------------------------------------
     // Reads
@@ -114,9 +116,32 @@ export class SalesService {
         actorId: string,
         opts: CreateSaleOptions,
     ): Promise<SaleDetailRow> {
+        return this.prisma.$transaction((tx) =>
+            this.createInTx(tx, dto, actorId, opts),
+            {
+                // Interactive transactions default to 5s, which is too tight for
+                // a multi-line sale over a pooled Neon connection from a remote
+                // region. 30s is safe headroom; any real work takes <2s locally.
+                timeout: 30_000,
+                maxWait: 10_000,
+            },
+        );
+    }
+
+    /**
+     * Transaction-aware variant. Used by QuotationsService to create a
+     * sale from a quotation in the SAME transaction that marks the
+     * quotation CONVERTED. Do not call standalone.
+     */
+    async createInTx(
+        tx: Prisma.TransactionClient,
+        dto: CreateSaleDto,
+        actorId: string,
+        opts: CreateSaleOptions,
+    ): Promise<SaleDetailRow> {
         // --- 1. Validate terminal, warehouse, customer ---
 
-        const terminal = await this.prisma.terminal.findFirst({
+        const terminal = await tx.terminal.findFirst({
             where: { Id: dto.TerminalId, DeletedAt: null },
             select: { Id: true, Code: true, IsActive: true, WarehouseId: true },
         });
@@ -127,7 +152,7 @@ export class SalesService {
             throw new BadRequestException(`Terminal ${terminal.Code} is inactive`);
         }
 
-        const warehouse = await this.prisma.warehouse.findFirst({
+        const warehouse = await tx.warehouse.findFirst({
             where: { Id: terminal.WarehouseId, DeletedAt: null },
             select: { Id: true, IsActive: true, Name: true },
         });
@@ -137,7 +162,6 @@ export class SalesService {
             );
         }
 
-        // Determine if any payment is credit — customer then required.
         const hasCredit = dto.Payments.some(
             (p) => p.Method === SalePaymentMethod.CREDIT,
         );
@@ -151,6 +175,14 @@ export class SalesService {
             );
         }
 
+        // >>> LOYALTY — redeem requires a customer
+        const wantsRedeem = (dto.RedeemPoints ?? 0) > 0;
+        if (wantsRedeem && !dto.CustomerId) {
+            throw new BadRequestException(
+                'CustomerId is required when RedeemPoints is used',
+            );
+        }
+
         let customer: {
             Id: string;
             CreditLimit: Prisma.Decimal;
@@ -159,15 +191,25 @@ export class SalesService {
         } | null = null;
 
         if (dto.CustomerId) {
-            const found = await this.prisma.customer.findFirst({
+            const found = await tx.customer.findFirst({
                 where: { Id: dto.CustomerId, DeletedAt: null },
-                select: { Id: true, CreditLimit: true, Balance: true, IsActive: true, Name: true },
+                select: {
+                    Id: true,
+                    CreditLimit: true,
+                    Balance: true,
+                    IsActive: true,
+                    Name: true,
+                },
             });
             if (!found) {
-                throw new BadRequestException('Customer not found or has been deleted');
+                throw new BadRequestException(
+                    'Customer not found or has been deleted',
+                );
             }
             if (!found.IsActive) {
-                throw new BadRequestException(`Customer "${found.Name}" is inactive`);
+                throw new BadRequestException(
+                    `Customer "${found.Name}" is inactive`,
+                );
             }
             customer = found;
         }
@@ -175,7 +217,7 @@ export class SalesService {
         // --- 2. Validate products, compute line totals ---
 
         const productIds = Array.from(new Set(dto.Items.map((i) => i.ProductId)));
-        const products = await this.prisma.product.findMany({
+        const products = await tx.product.findMany({
             where: { Id: { in: productIds }, DeletedAt: null },
             select: { Id: true, IsActive: true, Name: true, TaxRate: true },
         });
@@ -193,7 +235,6 @@ export class SalesService {
             }
         }
 
-        // Discount permission check
         const anyDiscount = dto.Items.some(
             (i) => i.Discount !== undefined && i.Discount > 0,
         );
@@ -250,7 +291,49 @@ export class SalesService {
         const subtotal = lines.reduce((s, l) => s.add(l.LineSubtotal), ZERO);
         const discountAmount = lines.reduce((s, l) => s.add(l.LineDiscount), ZERO);
         const taxAmount = lines.reduce((s, l) => s.add(l.LineTax), ZERO);
-        const totalAmount = subtotal.sub(discountAmount).add(taxAmount);
+
+        // >>> LOYALTY — compute the loyalty discount before final total
+        const grossTotal = subtotal.sub(discountAmount).add(taxAmount);
+
+        const loyaltyConfig = await this.loyalty.getConfig();
+        const wantsLoyalty = wantsRedeem && loyaltyConfig.Enabled;
+
+        let loyaltyRedeemedPoints = 0;
+        let loyaltyDiscountAmount = ZERO;
+
+        if (wantsRedeem && !loyaltyConfig.Enabled) {
+            throw new BadRequestException(
+                'Loyalty program is disabled — cannot redeem points',
+            );
+        }
+
+        if (wantsLoyalty) {
+            const requestedPoints = dto.RedeemPoints!;
+            if (requestedPoints < loyaltyConfig.MinRedeem) {
+                throw new BadRequestException(
+                    `Minimum redemption is ${loyaltyConfig.MinRedeem} points`,
+                );
+            }
+
+            const discount = new Prisma.Decimal(requestedPoints)
+                .mul(loyaltyConfig.RedeemRate)
+                .toDecimalPlaces(4);
+            const maxDiscount = grossTotal
+                .mul(loyaltyConfig.MaxRedeemPercent)
+                .div(100)
+                .toDecimalPlaces(4);
+
+            if (discount.greaterThan(maxDiscount)) {
+                throw new BadRequestException(
+                    `Loyalty discount ${discount.toString()} exceeds the ${loyaltyConfig.MaxRedeemPercent}% cap (${maxDiscount.toString()}).`,
+                );
+            }
+
+            loyaltyRedeemedPoints = requestedPoints;
+            loyaltyDiscountAmount = discount;
+        }
+
+        const totalAmount = grossTotal.sub(loyaltyDiscountAmount);
 
         // --- 3. Validate payment totals + credit limit ---
 
@@ -268,7 +351,6 @@ export class SalesService {
             );
         }
 
-        // Group amounts by method.
         let cashAmount = ZERO;
         let cardAmount = ZERO;
         let creditAmount = ZERO;
@@ -290,7 +372,6 @@ export class SalesService {
             }
         }
 
-        // Enforce credit limit if credit taken
         if (creditAmount.gt(0) && customer) {
             const newBalance = new Prisma.Decimal(customer.Balance).add(creditAmount);
             if (newBalance.gt(customer.CreditLimit)) {
@@ -303,172 +384,197 @@ export class SalesService {
             }
         }
 
-        // --- 4. Atomic checkout ---
+        // --- 4. Write ---
 
-        return this.prisma.$transaction(async (tx) => {
-            const invoiceNumber = await nextCode(tx, terminal.Code, 6);
-            const now = new Date();
+        const invoiceNumber = await nextCode(tx, terminal.Code, 6);
+        const now = new Date();
 
-            const sale = await tx.sale.create({
+        const sale = await tx.sale.create({
+            data: {
+                InvoiceNumber: invoiceNumber,
+                TerminalId: terminal.Id,
+                WarehouseId: warehouse.Id,
+                CashierId: actorId,
+                CustomerId: dto.CustomerId ?? null,
+                Subtotal: subtotal,
+                DiscountAmount: discountAmount,
+                TaxAmount: taxAmount,
+                TotalAmount: totalAmount,
+                CashAmount: cashAmount,
+                CardAmount: cardAmount,
+                CreditAmount: creditAmount,
+                ChequeAmount: chequeAmount,
+                LoyaltyRedeemedPoints: loyaltyRedeemedPoints,
+                LoyaltyDiscountAmount: loyaltyDiscountAmount,
+                PaidAmount: cashAmount.add(cardAmount).add(chequeAmount),
+                RefundedAmount: ZERO,
+                Status: 'COMPLETED',
+                Notes: dto.Notes ?? null,
+                CreatedByUserId: actorId,
+                UpdatedByUserId: actorId,
+            },
+        });
+
+        await tx.saleItem.createMany({
+            data: lines.map((l) => ({
+                SaleId: sale.Id,
+                ProductId: l.ProductId,
+                Qty: l.Qty,
+                UnitPrice: l.UnitPrice,
+                Discount: l.Discount,
+                TaxRate: l.TaxRate,
+                LineSubtotal: l.LineSubtotal,
+                LineDiscount: l.LineDiscount,
+                LineTax: l.LineTax,
+                LineTotal: l.LineTotal,
+                Notes: l.Notes,
+            })),
+        });
+
+        const chequeIdByPaymentIndex = new Map<number, string>();
+        for (let i = 0; i < payments.length; i++) {
+            const p = payments[i];
+            if (p.Method !== SalePaymentMethod.CHEQUE) continue;
+
+            const chequeCode = await nextCode(tx, 'RCHQ');
+            const cheque = await tx.customerCheque.create({
                 data: {
-                    InvoiceNumber: invoiceNumber,
-                    TerminalId: terminal.Id,
-                    WarehouseId: warehouse.Id,
-                    CashierId: actorId,
-                    CustomerId: dto.CustomerId ?? null,
-                    Subtotal: subtotal,
-                    DiscountAmount: discountAmount,
-                    TaxAmount: taxAmount,
-                    TotalAmount: totalAmount,
-                    CashAmount: cashAmount,
-                    CardAmount: cardAmount,
-                    CreditAmount: creditAmount,
-                    ChequeAmount: chequeAmount,
-                    PaidAmount: cashAmount.add(cardAmount).add(chequeAmount),
-                    RefundedAmount: ZERO,
-                    Status: 'COMPLETED',
-                    Notes: dto.Notes ?? null,
+                    Code: chequeCode,
+                    CustomerId: dto.CustomerId!,
+                    SaleId: sale.Id,
+                    ChequeNumber: p.Cheque.ChequeNumber!,
+                    BankName: p.Cheque.BankName ?? null,
+                    BankBranch: p.Cheque.BankBranch ?? null,
+                    Amount: p.Amount,
+                    IssueDate: new Date(p.Cheque.ChequeIssueDate!),
+                    DueDate: new Date(p.Cheque.ChequeDueDate!),
+                    Status: 'PENDING',
+                    Notes: p.Cheque.Notes ?? null,
                     CreatedByUserId: actorId,
                     UpdatedByUserId: actorId,
                 },
             });
+            chequeIdByPaymentIndex.set(i, cheque.Id);
+        }
 
-            await tx.saleItem.createMany({
-                data: lines.map((l) => ({
+        for (let i = 0; i < payments.length; i++) {
+            const p = payments[i];
+            await tx.salePayment.create({
+                data: {
                     SaleId: sale.Id,
-                    ProductId: l.ProductId,
-                    Qty: l.Qty,
-                    UnitPrice: l.UnitPrice,
-                    Discount: l.Discount,
-                    TaxRate: l.TaxRate,
-                    LineSubtotal: l.LineSubtotal,
-                    LineDiscount: l.LineDiscount,
-                    LineTax: l.LineTax,
-                    LineTotal: l.LineTotal,
-                    Notes: l.Notes,
-                })),
+                    Method: p.Method,
+                    Amount: p.Amount,
+                    ChequeId: chequeIdByPaymentIndex.get(i) ?? null,
+                    Notes: p.Cheque.Notes ?? null,
+                    CreatedByUserId: actorId,
+                },
             });
+        }
 
-            // Cheques first (SalePayment references them)
-            const chequeIdByPaymentIndex = new Map<number, string>();
-            for (let i = 0; i < payments.length; i++) {
-                const p = payments[i];
-                if (p.Method !== SalePaymentMethod.CHEQUE) continue;
-
-                const chequeCode = await nextCode(tx, 'RCHQ');
-                const cheque = await tx.customerCheque.create({
-                    data: {
-                        Code: chequeCode,
-                        CustomerId: dto.CustomerId!,
-                        SaleId: sale.Id,
-                        ChequeNumber: p.Cheque.ChequeNumber!,
-                        BankName: p.Cheque.BankName ?? null,
-                        BankBranch: p.Cheque.BankBranch ?? null,
-                        Amount: p.Amount,
-                        IssueDate: new Date(p.Cheque.ChequeIssueDate!),
-                        DueDate: new Date(p.Cheque.ChequeDueDate!),
-                        Status: 'PENDING',
-                        Notes: p.Cheque.Notes ?? null,
-                        CreatedByUserId: actorId,
-                        UpdatedByUserId: actorId,
-                    },
-                });
-                chequeIdByPaymentIndex.set(i, cheque.Id);
-            }
-
-            // SalePayments
-            for (let i = 0; i < payments.length; i++) {
-                const p = payments[i];
-                await tx.salePayment.create({
-                    data: {
-                        SaleId: sale.Id,
-                        Method: p.Method,
-                        Amount: p.Amount,
-                        ChequeId: chequeIdByPaymentIndex.get(i) ?? null,
-                        Notes: p.Cheque.Notes ?? null,
-                        CreatedByUserId: actorId,
-                    },
-                });
-            }
-
-            // Stock movements
-            for (const l of lines) {
-                await this.stock.adjustStock(
-                    {
-                        ProductId: l.ProductId,
-                        WarehouseId: warehouse.Id,
-                        Quantity: -l.Qty,
-                        Type: 'SALE',
-                        UnitCost: Number(l.UnitPrice),
-                        SaleId: sale.Id,
-                        Notes: `Sale ${invoiceNumber}`,
-                        ActorId: actorId,
-                    },
-                    tx,
-                );
-            }
-
-            // Cash ledger — only for physical cash
-            if (cashAmount.gt(0)) {
-                await tx.cashLedger.create({
-                    data: {
-                        Type: 'SALE',
-                        Amount: cashAmount,
-                        SaleId: sale.Id,
-                        Notes: `Sale ${invoiceNumber}`,
-                        CreatedByUserId: actorId,
-                    },
-                });
-            }
-
-            // Customer ledger — only for the credit portion
-            if (creditAmount.gt(0) && customer) {
-                const newBalance = new Prisma.Decimal(customer.Balance).add(
-                    creditAmount,
-                );
-                await tx.customerLedger.create({
-                    data: {
-                        CustomerId: customer.Id,
-                        Type: 'SALE',
-                        Amount: creditAmount,
-                        BalanceAfter: newBalance,
-                        SaleId: sale.Id,
-                        Notes: `Credit portion of sale ${invoiceNumber}`,
-                        CreatedByUserId: actorId,
-                    },
-                });
-                await tx.customer.update({
-                    where: { Id: customer.Id },
-                    data: { Balance: newBalance },
-                });
-            }
-
-            await this.audit.log(
+        for (const l of lines) {
+            await this.stock.adjustStock(
                 {
-                    UserId: actorId,
-                    Action: 'SALE_CREATED',
-                    Entity: 'Sale',
-                    EntityId: sale.Id,
-                    After: sale,
-                    Metadata: {
-                        InvoiceNumber: invoiceNumber,
-                        ItemCount: lines.length,
-                        CashAmount: cashAmount.toString(),
-                        CardAmount: cardAmount.toString(),
-                        CreditAmount: creditAmount.toString(),
-                        ChequeAmount: chequeAmount.toString(),
-                    },
+                    ProductId: l.ProductId,
+                    WarehouseId: warehouse.Id,
+                    Quantity: -l.Qty,
+                    Type: 'SALE',
+                    UnitCost: Number(l.UnitPrice),
+                    SaleId: sale.Id,
+                    Notes: `Sale ${invoiceNumber}`,
+                    ActorId: actorId,
                 },
                 tx,
             );
+        }
 
-            return tx.sale.findUniqueOrThrow({
-                where: { Id: sale.Id },
-                include: SALE_DETAIL_INCLUDE,
+        if (cashAmount.gt(0)) {
+            await tx.cashLedger.create({
+                data: {
+                    Type: 'SALE',
+                    Amount: cashAmount,
+                    SaleId: sale.Id,
+                    Notes: `Sale ${invoiceNumber}`,
+                    CreatedByUserId: actorId,
+                },
             });
+        }
+
+        if (creditAmount.gt(0) && customer) {
+            const newBalance = new Prisma.Decimal(customer.Balance).add(
+                creditAmount,
+            );
+            await tx.customerLedger.create({
+                data: {
+                    CustomerId: customer.Id,
+                    Type: 'SALE',
+                    Amount: creditAmount,
+                    BalanceAfter: newBalance,
+                    SaleId: sale.Id,
+                    Notes: `Credit portion of sale ${invoiceNumber}`,
+                    CreatedByUserId: actorId,
+                },
+            });
+            await tx.customer.update({
+                where: { Id: customer.Id },
+                data: { Balance: newBalance },
+            });
+        }
+
+        // >>> LOYALTY — redeem (if any) then earn
+        if (customer && loyaltyConfig.Enabled) {
+            if (loyaltyRedeemedPoints > 0) {
+                await this.loyalty.redeem(tx, {
+                    CustomerId: customer.Id,
+                    SaleId: sale.Id,
+                    Points: loyaltyRedeemedPoints,
+                    GrossTotal: grossTotal,
+                    ActorId: actorId,
+                    Config: loyaltyConfig,
+                });
+            }
+
+            const earnResult = await this.loyalty.earn(tx, {
+                CustomerId: customer.Id,
+                SaleId: sale.Id,
+                Amount: totalAmount,
+                ActorId: actorId,
+                Config: loyaltyConfig,
+            });
+
+            if (earnResult) {
+                await tx.sale.update({
+                    where: { Id: sale.Id },
+                    data: { LoyaltyEarnedPoints: earnResult.Points },
+                });
+            }
+        }
+
+        await this.audit.log(
+            {
+                UserId: actorId,
+                Action: 'SALE_CREATED',
+                Entity: 'Sale',
+                EntityId: sale.Id,
+                After: sale,
+                Metadata: {
+                    InvoiceNumber: invoiceNumber,
+                    ItemCount: lines.length,
+                    CashAmount: cashAmount.toString(),
+                    CardAmount: cardAmount.toString(),
+                    CreditAmount: creditAmount.toString(),
+                    ChequeAmount: chequeAmount.toString(),
+                    LoyaltyRedeemedPoints: loyaltyRedeemedPoints,
+                    LoyaltyDiscountAmount: loyaltyDiscountAmount.toString(),
+                },
+            },
+            tx,
+        );
+
+        return tx.sale.findUniqueOrThrow({
+            where: { Id: sale.Id },
+            include: SALE_DETAIL_INCLUDE,
         });
     }
-
     // ---------------------------------------------------------------
     // Cancel
     // ---------------------------------------------------------------
@@ -566,6 +672,18 @@ export class SalesService {
                     data: { Balance: newBalance },
                 });
             }
+            // >>> LOYALTY — reverse earned + restore redeemed
+            await this.loyalty.reverseForCancel(tx, {
+                Sale: {
+                    Id: sale.Id,
+                    CustomerId: sale.CustomerId,
+                    InvoiceNumber: sale.InvoiceNumber,
+                    LoyaltyEarnedPoints: sale.LoyaltyEarnedPoints,
+                    LoyaltyRedeemedPoints: sale.LoyaltyRedeemedPoints,
+                },
+                ActorId: actorId,
+                Reason: dto.Reason,
+            });
 
             // Note: card payments cannot be reversed through the system.
             // The accountant handles that via the bank. We simply don't

@@ -1,3 +1,4 @@
+//src/modules/warehouses/dto/update-warehouse.dto.ts
 import { PartialType } from '@nestjs/swagger';
 import { CreateWarehouseDto } from './create-warehouse.dto';
 

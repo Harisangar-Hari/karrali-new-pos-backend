@@ -1,3 +1,4 @@
+//src/modules/customers/dto/create-customer.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CustomerType } from '@prisma/client';
 import { Transform } from 'class-transformer';

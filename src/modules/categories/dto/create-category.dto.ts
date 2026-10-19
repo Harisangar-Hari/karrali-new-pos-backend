@@ -1,3 +1,4 @@
+//src/modules/categories/dto/create-category.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsBoolean,

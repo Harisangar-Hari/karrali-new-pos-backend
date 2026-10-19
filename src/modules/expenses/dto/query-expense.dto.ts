@@ -1,3 +1,4 @@
+//src/modules/expenses/dto/query-expense.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ExpensePaymentMethod } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

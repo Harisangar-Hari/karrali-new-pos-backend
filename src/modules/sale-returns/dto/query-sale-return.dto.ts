@@ -1,3 +1,4 @@
+//src/modules/sale-returns/dto/query-sale-return.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsDateString, IsIn, IsOptional, IsUUID } from 'class-validator';
 import { PaginationDto } from '../../../common/dto/pagination.dto';

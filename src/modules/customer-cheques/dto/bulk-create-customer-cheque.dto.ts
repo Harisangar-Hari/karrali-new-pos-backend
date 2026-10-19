@@ -1,3 +1,4 @@
+//src/modules/customer-cheques/dto/bulk-create-customer-cheque.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { ArrayMinSize, IsArray, ValidateNested } from 'class-validator';

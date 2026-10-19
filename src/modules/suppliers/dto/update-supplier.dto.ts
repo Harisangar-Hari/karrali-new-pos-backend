@@ -1,3 +1,4 @@
+//src/modules/suppliers/dto/update-supplier.dto.ts
 import { PartialType } from '@nestjs/swagger';
 import { CreateSupplierDto } from './create-supplier.dto';
 

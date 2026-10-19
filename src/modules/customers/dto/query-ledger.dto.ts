@@ -1,3 +1,4 @@
+//src/modules/customers/dto/query-ledger.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { CustomerLedgerType } from '@prisma/client';
 import { IsEnum, IsOptional, IsUUID } from 'class-validator';

@@ -1,3 +1,4 @@
+//src/modules/cash-movements/dto/delete-cash-movement.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 

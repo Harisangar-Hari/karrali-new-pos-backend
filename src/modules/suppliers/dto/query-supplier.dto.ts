@@ -1,3 +1,4 @@
+//src/modules/suppliers/dto/query-supplier.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsIn, IsOptional } from 'class-validator';

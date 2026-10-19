@@ -1,3 +1,4 @@
+//src/modules/stock/dto/query-stock-movement.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { StockMovementType } from '@prisma/client';
 import { IsEnum, IsOptional, IsUUID } from 'class-validator';

@@ -1,3 +1,4 @@
+//src/modules/customer-cheques/dto/clear-customer-cheque.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsDateString, IsOptional, IsString, MaxLength } from 'class-validator';
 

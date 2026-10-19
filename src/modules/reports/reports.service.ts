@@ -306,8 +306,28 @@ export class ReportsService {
         const unit = group; // 'day' | 'week' | 'month'
 
         const rows = await this.prisma.$queryRaw<SalesSummaryRow[]>`
+            WITH bucketed AS (
+                SELECT
+                    TO_CHAR(DATE_TRUNC(${unit}::text, "CreatedAt"), 'YYYY-MM-DD') AS "Period",
+                    "Subtotal",
+                    "DiscountAmount",
+                    "TaxAmount",
+                    "TotalAmount",
+                    "CashAmount",
+                    "CardAmount",
+                    "CreditAmount",
+                    "ChequeAmount",
+                    "RefundedAmount"
+                FROM "Sales"
+                WHERE "DeletedAt" IS NULL
+                  AND "Status" <> 'CANCELLED'
+                  AND "CreatedAt" >= ${from}
+                  AND "CreatedAt" <= ${to}
+                  ${terminalFilter}
+                  ${cashierFilter}
+            )
             SELECT
-                TO_CHAR(DATE_TRUNC(${unit}::text, "CreatedAt"), 'YYYY-MM-DD') AS "Period",
+                "Period",
                 COUNT(*)::int                             AS "SaleCount",
                 COALESCE(SUM("Subtotal"), 0)::text        AS "GrossSales",
                 COALESCE(SUM("DiscountAmount"), 0)::text  AS "Discounts",
@@ -318,20 +338,13 @@ export class ReportsService {
                 COALESCE(SUM("CreditAmount"), 0)::text    AS "CreditTotal",
                 COALESCE(SUM("ChequeAmount"), 0)::text    AS "ChequeTotal",
                 COALESCE(SUM("RefundedAmount"), 0)::text  AS "RefundTotal"
-            FROM "Sales"
-            WHERE "DeletedAt" IS NULL
-              AND "Status" <> 'CANCELLED'
-              AND "CreatedAt" >= ${from}
-              AND "CreatedAt" <= ${to}
-              ${terminalFilter}
-              ${cashierFilter}
-            GROUP BY DATE_TRUNC(${unit}::text, "CreatedAt")
-            ORDER BY DATE_TRUNC(${unit}::text, "CreatedAt") ASC
+            FROM bucketed
+            GROUP BY "Period"
+            ORDER BY "Period" ASC
         `;
 
         return { Group: group, From: from.toISOString(), To: to.toISOString(), Rows: rows };
     }
-
     // ---------------------------------------------------------------
     // Z-Report — day close summary
     // ---------------------------------------------------------------
@@ -689,37 +702,47 @@ export class ReportsService {
         const unit = group; // 'day' | 'week' | 'month'
 
         const rows = await this.prisma.$queryRaw<ProfitReportRow[]>`
+            WITH joined AS (
+                SELECT
+                    TO_CHAR(DATE_TRUNC(${unit}::text, s."CreatedAt"), 'YYYY-MM-DD') AS "Bucket",
+                    si."Qty"             AS "Qty",
+                    si."LineSubtotal"    AS "LineSubtotal",
+                    si."LineDiscount"    AS "LineDiscount",
+                    si."LineTax"         AS "LineTax",
+                    p."CostPrice"        AS "CostPrice"
+                FROM "SaleItems" si
+                JOIN "Sales" s ON s."Id" = si."SaleId"
+                JOIN "Products" p ON p."Id" = si."ProductId"
+                WHERE s."DeletedAt" IS NULL
+                  AND s."Status" <> 'CANCELLED'
+                  AND s."CreatedAt" >= ${from}
+                  AND s."CreatedAt" <= ${to}
+                  ${terminalFilter}
+                  ${categoryFilter}
+                  ${productFilter}
+            )
             SELECT
                 NULL::uuid                                   AS "ProductId",
-                TO_CHAR(DATE_TRUNC(${unit}::text, s."CreatedAt"), 'YYYY-MM-DD') AS "Name",
+                "Bucket"                                     AS "Name",
                 NULL::text                                   AS "SKU",
                 NULL::text                                   AS "CategoryName",
-                SUM(si."Qty")::int                           AS "QtySold",
-                SUM(si."LineSubtotal" - si."LineDiscount")::text AS "NetRevenue",
-                SUM(si."LineTax")::text                      AS "TaxCollected",
-                SUM(si."Qty" * p."CostPrice")::text          AS "COGS",
-                SUM(si."LineSubtotal" - si."LineDiscount" - (si."Qty" * p."CostPrice"))::text AS "GrossProfit",
+                SUM("Qty")::int                              AS "QtySold",
+                SUM("LineSubtotal" - "LineDiscount")::text   AS "NetRevenue",
+                SUM("LineTax")::text                         AS "TaxCollected",
+                SUM("Qty" * "CostPrice")::text               AS "COGS",
+                SUM("LineSubtotal" - "LineDiscount" - ("Qty" * "CostPrice"))::text AS "GrossProfit",
                 CASE
-                    WHEN SUM(si."LineSubtotal" - si."LineDiscount") > 0
+                    WHEN SUM("LineSubtotal" - "LineDiscount") > 0
                     THEN ROUND(
-                        (SUM(si."LineSubtotal" - si."LineDiscount" - (si."Qty" * p."CostPrice"))
-                         / SUM(si."LineSubtotal" - si."LineDiscount") * 100)::numeric,
+                        (SUM("LineSubtotal" - "LineDiscount" - ("Qty" * "CostPrice"))
+                         / SUM("LineSubtotal" - "LineDiscount") * 100)::numeric,
                         2
                     )::text
                     ELSE '0.00'
                 END                                          AS "MarginPct"
-            FROM "SaleItems" si
-            JOIN "Sales" s ON s."Id" = si."SaleId"
-            JOIN "Products" p ON p."Id" = si."ProductId"
-            WHERE s."DeletedAt" IS NULL
-              AND s."Status" <> 'CANCELLED'
-              AND s."CreatedAt" >= ${from}
-              AND s."CreatedAt" <= ${to}
-              ${terminalFilter}
-              ${categoryFilter}
-              ${productFilter}
-            GROUP BY DATE_TRUNC(${unit}::text, s."CreatedAt")
-            ORDER BY DATE_TRUNC(${unit}::text, s."CreatedAt") ASC
+            FROM joined
+            GROUP BY "Bucket"
+            ORDER BY "Bucket" ASC
         `;
 
         return {
@@ -730,7 +753,6 @@ export class ReportsService {
             Total: this.sumProfitRows(rows),
         };
     }
-
     // ---------------------------------------------------------------
     // Stock valuation — current qty × current cost
     // ---------------------------------------------------------------
@@ -1294,18 +1316,30 @@ export class ReportsService {
         const opening = new Prisma.Decimal(beforeAgg._sum.Amount ?? 0);
 
         // Per-period, per-type aggregation.
+        //
+        // The DATE_TRUNC expression is computed once inside the CTE so the
+        // outer query can GROUP BY the aliased column directly. Attempting
+        // to repeat the parameterized expression in both SELECT and
+        // GROUP BY triggers Postgres error 42803.
         type Row = { Period: Date; Type: string; Sum: string; Cnt: bigint };
         const rows = await this.prisma.$queryRaw<Row[]>`
+            WITH bucketed AS (
+                SELECT
+                    DATE_TRUNC(${group}::text, "CreatedAt") AS "Period",
+                    "Type"::text                            AS "Type",
+                    "Amount"                                AS "Amount"
+                FROM "CashLedgers"
+                WHERE "CreatedAt" >= ${from}
+                  AND "CreatedAt" <= ${to}
+            )
             SELECT
-                DATE_TRUNC(${group}::text, "CreatedAt") AS "Period",
-                "Type"::text                            AS "Type",
+                "Period",
+                "Type",
                 COALESCE(SUM("Amount"), 0)::text        AS "Sum",
                 COUNT(*)::bigint                        AS "Cnt"
-            FROM "CashLedgers"
-            WHERE "CreatedAt" >= ${from}
-              AND "CreatedAt" <= ${to}
-            GROUP BY DATE_TRUNC(${group}::text, "CreatedAt"), "Type"
-            ORDER BY DATE_TRUNC(${group}::text, "CreatedAt") ASC
+            FROM bucketed
+            GROUP BY "Period", "Type"
+            ORDER BY "Period" ASC
         `;
 
         // Pivot into per-period rows.

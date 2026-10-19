@@ -1,3 +1,4 @@
+//src/modules/bank-accounts/dto/query-bank-account.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsIn, IsOptional } from 'class-validator';

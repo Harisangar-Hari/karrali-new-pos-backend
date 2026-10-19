@@ -1,3 +1,4 @@
+//src/modules/purchases/dto/create-purchase.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {

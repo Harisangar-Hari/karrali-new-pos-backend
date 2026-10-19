@@ -1,3 +1,4 @@
+//src/modules/suppliers/dto/create-supplier.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {

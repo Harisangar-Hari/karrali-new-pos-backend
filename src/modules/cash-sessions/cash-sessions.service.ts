@@ -38,6 +38,8 @@ export interface ExpectedCashResult {
     LedgerTotal: string;
     ExpectedCash: string;
     EntryCount: number;
+    /** Per-type totals for the drawer breakdown strip. */
+    ByType: Record<string, { total: string; count: number }>;
 }
 
 export interface OpenSessionSummary extends Omit<SessionRow, 'ExpectedCash'> {
@@ -113,18 +115,50 @@ export class CashSessionsService {
      * ledger entries created during the session window that haven't
      * been attached yet.
      */
-    async getExpectedCash(sessionId: string): Promise<ExpectedCashResult> {
+   async getExpectedCash(sessionId: string): Promise<ExpectedCashResult> {
         const session = await this.prisma.cashSession.findUnique({
             where: { Id: sessionId },
         });
         if (!session) throw new NotFoundException('Cash session not found');
 
-        const { total, count } = await this.computeLedgerTotal(
-            session.Id,
-            session.CashierId,
-            session.OpenedAt,
-            session.ClosedAt ?? new Date(),
-        );
+        const upTo = session.ClosedAt ?? new Date();
+
+        // Same "attached + in-window orphans" predicate used by
+        // computeLedgerTotal, applied twice: once for the grand total,
+        // once grouped by Type for the drawer breakdown strip.
+        const ledgerWhere: Prisma.CashLedgerWhereInput = {
+            OR: [
+                { CashSessionId: sessionId },
+                {
+                    CashSessionId: null,
+                    CreatedByUserId: session.CashierId,
+                    CreatedAt: { gte: session.OpenedAt, lte: upTo },
+                },
+            ],
+        };
+
+        const [{ total, count }, grouped] = await Promise.all([
+            this.computeLedgerTotal(
+                session.Id,
+                session.CashierId,
+                session.OpenedAt,
+                upTo,
+            ),
+            this.prisma.cashLedger.groupBy({
+                by: ['Type'],
+                where: ledgerWhere,
+                _sum: { Amount: true },
+                _count: { _all: true },
+            }),
+        ]);
+
+        const byType: Record<string, { total: string; count: number }> = {};
+        for (const row of grouped) {
+            byType[row.Type] = {
+                total: new Prisma.Decimal(row._sum.Amount ?? 0).toString(),
+                count: row._count._all,
+            };
+        }
 
         const expected = new Prisma.Decimal(session.StartingCash).add(total);
 
@@ -134,6 +168,7 @@ export class CashSessionsService {
             LedgerTotal: total.toString(),
             ExpectedCash: expected.toString(),
             EntryCount: count,
+            ByType: byType,
         };
     }
 

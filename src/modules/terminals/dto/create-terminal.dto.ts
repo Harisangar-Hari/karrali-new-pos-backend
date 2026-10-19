@@ -1,3 +1,4 @@
+//src/modules/terminals/dto/create-terminal.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsBoolean,

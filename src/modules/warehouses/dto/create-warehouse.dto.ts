@@ -1,3 +1,4 @@
+//src/modules/warehouses/dto/create-warehouse.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsBoolean,

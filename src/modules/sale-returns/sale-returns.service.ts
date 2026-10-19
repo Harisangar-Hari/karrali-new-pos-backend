@@ -13,6 +13,7 @@ import { AuditService } from '../audit/audit.service';
 import { StockService } from '../stock/stock.service';
 import { CreateSaleReturnDto } from './dto/create-sale-return.dto';
 import { QuerySaleReturnDto } from './dto/query-sale-return.dto';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 const RETURN_CODE_PREFIX = 'RET';
 
@@ -49,7 +50,8 @@ export class SaleReturnsService {
         private readonly prisma: PrismaService,
         private readonly audit: AuditService,
         private readonly stock: StockService,
-    ) {}
+        private readonly loyalty: LoyaltyService,
+    ) { }
 
     // ---------------------------------------------------------------
     // Reads
@@ -166,12 +168,20 @@ export class SaleReturnsService {
                 );
             }
 
-            // Proportional refund from the original line snapshot
+            // Proportional refund from the original line snapshot.
+            //
+            // IMPORTANT: refund is proportional to what the customer
+            // actually paid, which is the POST-DISCOUNT amount. The
+            // SaleItem.LineSubtotal column is the raw (pre-discount)
+            // subtotal; we must subtract LineDiscount to get the amount
+            // the customer was actually charged for that line.
             const originalQty = new Prisma.Decimal(saleItem.Qty);
             const returnQty = new Prisma.Decimal(item.Qty);
             const ratio = returnQty.div(originalQty);
 
+            // Post-discount subtotal for the returned portion
             const lineSubtotal = new Prisma.Decimal(saleItem.LineSubtotal)
+                .sub(saleItem.LineDiscount)
                 .mul(ratio)
                 .toDecimalPlaces(4);
             const lineTax = new Prisma.Decimal(saleItem.LineTax)
@@ -208,147 +218,183 @@ export class SaleReturnsService {
 
         // --- Atomic write ---
 
-        return this.prisma.$transaction(async (tx) => {
-            const code = await nextCode(tx, RETURN_CODE_PREFIX);
+        return this.prisma.$transaction(
+            async (tx) => {
+                const code = await nextCode(tx, RETURN_CODE_PREFIX);
 
-            const saleReturn = await tx.saleReturn.create({
-                data: {
-                    Code: code,
-                    SaleId: sale.Id,
-                    CustomerId:
-                        dto.RefundMethod === 'CREDIT'
-                            ? dto.CustomerId ?? sale.CustomerId
-                            : sale.CustomerId,
-                    RefundMethod: dto.RefundMethod,
-                    Subtotal: subtotal,
-                    TaxAmount: taxAmount,
-                    RefundAmount: refundAmount,
-                    Notes: dto.Notes ?? null,
-                    CreatedByUserId: actorId,
-                },
-            });
-
-            await tx.saleReturnItem.createMany({
-                data: lines.map((l) => ({
-                    SaleReturnId: saleReturn.Id,
-                    SaleItemId: l.SaleItemId,
-                    ProductId: l.ProductId,
-                    Qty: l.Qty,
-                    UnitPrice: l.UnitPrice,
-                    TaxRate: l.TaxRate,
-                    LineSubtotal: l.LineSubtotal,
-                    LineTax: l.LineTax,
-                    RefundAmount: l.RefundAmount,
-                })),
-            });
-
-            // Update SaleItem.ReturnedQty caches
-            for (const l of lines) {
-                await tx.saleItem.update({
-                    where: { Id: l.SaleItemId },
-                    data: { ReturnedQty: { increment: l.Qty } },
-                });
-            }
-
-            // Stock back in
-            for (const l of lines) {
-                await this.stock.adjustStock(
-                    {
-                        ProductId: l.ProductId,
-                        WarehouseId: sale.WarehouseId,
-                        Quantity: l.Qty,
-                        Type: 'SALE_RETURN',
-                        UnitCost: Number(l.UnitPrice),
+                const saleReturn = await tx.saleReturn.create({
+                    data: {
+                        Code: code,
                         SaleId: sale.Id,
+                        CustomerId:
+                            dto.RefundMethod === 'CREDIT'
+                                ? dto.CustomerId ?? sale.CustomerId
+                                : sale.CustomerId,
+                        RefundMethod: dto.RefundMethod,
+                        Subtotal: subtotal,
+                        TaxAmount: taxAmount,
+                        RefundAmount: refundAmount,
+                        Notes: dto.Notes ?? null,
+                        CreatedByUserId: actorId,
+                    },
+                });
+
+                await tx.saleReturnItem.createMany({
+                    data: lines.map((l) => ({
                         SaleReturnId: saleReturn.Id,
-                        Notes: `Return ${code} for sale ${sale.InvoiceNumber}`,
-                        ActorId: actorId,
+                        SaleItemId: l.SaleItemId,
+                        ProductId: l.ProductId,
+                        Qty: l.Qty,
+                        UnitPrice: l.UnitPrice,
+                        TaxRate: l.TaxRate,
+                        LineSubtotal: l.LineSubtotal,
+                        LineTax: l.LineTax,
+                        RefundAmount: l.RefundAmount,
+                    })),
+                });
+
+                // Update SaleItem.ReturnedQty caches
+                for (const l of lines) {
+                    await tx.saleItem.update({
+                        where: { Id: l.SaleItemId },
+                        data: { ReturnedQty: { increment: l.Qty } },
+                    });
+                }
+
+                // Stock back in
+                for (const l of lines) {
+                    await this.stock.adjustStock(
+                        {
+                            ProductId: l.ProductId,
+                            WarehouseId: sale.WarehouseId,
+                            Quantity: l.Qty,
+                            Type: 'SALE_RETURN',
+                            UnitCost: Number(l.UnitPrice),
+                            SaleId: sale.Id,
+                            SaleReturnId: saleReturn.Id,
+                            Notes: `Return ${code} for sale ${sale.InvoiceNumber}`,
+                            ActorId: actorId,
+                        },
+                        tx,
+                    );
+                }
+
+                // Refund method handling
+                if (dto.RefundMethod === 'CASH') {
+                    await tx.cashLedger.create({
+                        data: {
+                            Type: 'SALE_REFUND',
+                            Amount: refundAmount.neg(),
+                            SaleId: sale.Id,
+                            SaleReturnId: saleReturn.Id,
+                            Notes: `Cash refund ${code}`,
+                            CreatedByUserId: actorId,
+                        },
+                    });
+                } else {
+                    // CREDIT
+                    const customerId = dto.CustomerId ?? sale.CustomerId!;
+                    const customer = await tx.customer.findUniqueOrThrow({
+                        where: { Id: customerId },
+                        select: { Balance: true },
+                    });
+                    const newBalance = new Prisma.Decimal(customer.Balance).sub(
+                        refundAmount,
+                    );
+                    await tx.customerLedger.create({
+                        data: {
+                            CustomerId: customerId,
+                            Type: 'SALE_RETURN',
+                            Amount: refundAmount.neg(),
+                            BalanceAfter: newBalance,
+                            SaleId: sale.Id,
+                            SaleReturnId: saleReturn.Id,
+                            Notes: `Store credit ${code}`,
+                            CreatedByUserId: actorId,
+                        },
+                    });
+                    await tx.customer.update({
+                        where: { Id: customerId },
+                        data: { Balance: newBalance },
+                    });
+                }
+
+                // Update Sale: bump RefundedAmount, then set status
+                const newRefunded = new Prisma.Decimal(sale.RefundedAmount).add(
+                    refundAmount,
+                );
+                const remainingAfter = new Prisma.Decimal(sale.TotalAmount).sub(
+                    newRefunded,
+                );
+                const newStatus = remainingAfter.lte(EPSILON)
+                    ? 'FULLY_RETURNED'
+                    : 'PARTIALLY_RETURNED';
+
+                await tx.sale.update({
+                    where: { Id: sale.Id },
+                    data: {
+                        RefundedAmount: newRefunded,
+                        Status: newStatus,
+                        UpdatedByUserId: actorId,
+                    },
+                });
+
+                // >>> LOYALTY — proportional earned-points clawback
+                const loyaltyReversedDelta = await this.loyalty.reverseForReturn(tx, {
+                    Sale: {
+                        Id: sale.Id,
+                        CustomerId: sale.CustomerId,
+                        InvoiceNumber: sale.InvoiceNumber,
+                        TotalAmount: sale.TotalAmount,
+                        LoyaltyEarnedPoints: sale.LoyaltyEarnedPoints,
+                        LoyaltyReversedPoints: sale.LoyaltyReversedPoints,
+                    },
+                    SaleReturnId: saleReturn.Id,
+                    ReturnCode: code,
+                    RefundAmount: refundAmount,
+                    NewTotalRefunded: newRefunded,
+                    ActorId: actorId,
+                });
+
+                if (loyaltyReversedDelta > 0) {
+                    await tx.sale.update({
+                        where: { Id: sale.Id },
+                        data: {
+                            LoyaltyReversedPoints: {
+                                increment: loyaltyReversedDelta,
+                            },
+                        },
+                    });
+                }
+
+                await this.audit.log(
+                    {
+                        UserId: actorId,
+                        Action: 'SALE_RETURN_CREATED',
+                        Entity: 'SaleReturn',
+                        EntityId: saleReturn.Id,
+                        After: saleReturn,
+                        Metadata: {
+                            SaleInvoiceNumber: sale.InvoiceNumber,
+                            RefundMethod: dto.RefundMethod,
+                            ItemCount: lines.length,
+                            SaleNewStatus: newStatus,
+                        },
                     },
                     tx,
                 );
-            }
 
-            // Refund method handling
-            if (dto.RefundMethod === 'CASH') {
-                await tx.cashLedger.create({
-                    data: {
-                        Type: 'SALE_REFUND',
-                        Amount: refundAmount.neg(),
-                        SaleId: sale.Id,
-                        SaleReturnId: saleReturn.Id,
-                        Notes: `Cash refund ${code}`,
-                        CreatedByUserId: actorId,
-                    },
+                return tx.saleReturn.findUniqueOrThrow({
+                    where: { Id: saleReturn.Id },
+                    include: RETURN_DETAIL_INCLUDE,
                 });
-            } else {
-                // CREDIT
-                const customerId = dto.CustomerId ?? sale.CustomerId!;
-                const customer = await tx.customer.findUniqueOrThrow({
-                    where: { Id: customerId },
-                    select: { Balance: true },
-                });
-                const newBalance = new Prisma.Decimal(customer.Balance).sub(
-                    refundAmount,
-                );
-                await tx.customerLedger.create({
-                    data: {
-                        CustomerId: customerId,
-                        Type: 'SALE_RETURN',
-                        Amount: refundAmount.neg(),
-                        BalanceAfter: newBalance,
-                        SaleId: sale.Id,
-                        SaleReturnId: saleReturn.Id,
-                        Notes: `Store credit ${code}`,
-                        CreatedByUserId: actorId,
-                    },
-                });
-                await tx.customer.update({
-                    where: { Id: customerId },
-                    data: { Balance: newBalance },
-                });
-            }
-
-            // Update Sale: bump RefundedAmount, then set status
-            const newRefunded = new Prisma.Decimal(sale.RefundedAmount).add(
-                refundAmount,
-            );
-            const remainingAfter = new Prisma.Decimal(sale.TotalAmount).sub(
-                newRefunded,
-            );
-            const newStatus = remainingAfter.lte(EPSILON)
-                ? 'FULLY_RETURNED'
-                : 'PARTIALLY_RETURNED';
-
-            await tx.sale.update({
-                where: { Id: sale.Id },
-                data: {
-                    RefundedAmount: newRefunded,
-                    Status: newStatus,
-                    UpdatedByUserId: actorId,
-                },
-            });
-
-            await this.audit.log(
-                {
-                    UserId: actorId,
-                    Action: 'SALE_RETURN_CREATED',
-                    Entity: 'SaleReturn',
-                    EntityId: saleReturn.Id,
-                    After: saleReturn,
-                    Metadata: {
-                        SaleInvoiceNumber: sale.InvoiceNumber,
-                        RefundMethod: dto.RefundMethod,
-                        ItemCount: lines.length,
-                        SaleNewStatus: newStatus,
-                    },
-                },
-                tx,
-            );
-
-            return tx.saleReturn.findUniqueOrThrow({
-                where: { Id: saleReturn.Id },
-                include: RETURN_DETAIL_INCLUDE,
-            });
-        });
+            },
+            {
+                // Interactive transaction timeout — Neon round trips add up
+                // fast on multi-line returns.
+                timeout: 30_000,
+                maxWait: 10_000,
+            },
+        );
     }
 }

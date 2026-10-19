@@ -1,3 +1,4 @@
+//src/modules/purchases/dto/query-purchase.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { PurchaseStatus } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

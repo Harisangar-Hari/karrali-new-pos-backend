@@ -287,6 +287,7 @@ model Product {
   PurchaseItems   PurchaseItem[]
   SaleItems       SaleItem[]
   SaleReturnItems SaleReturnItem[]
+  QuotationItems  QuotationItem[]
 
   @@index([CategoryId])
   @@index([BrandId])
@@ -407,8 +408,9 @@ model Customer {
   PaymentTerms String? // free-form for now ("Net 30", "Due on receipt")
 
   // Loyalty — columns reserved; engine lands in Phase 7.
-  LoyaltyPoints Int     @default(0)
-  LoyaltyTier   String?
+  LoyaltyPoints  Int     @default(0)
+  LoyaltyTier    String?
+  LifetimeEarned Int     @default(0)
 
   Notes    String?
   IsActive Boolean @default(true)
@@ -419,11 +421,13 @@ model Customer {
   CreatedByUserId String?   @db.Uuid
   UpdatedByUserId String?   @db.Uuid
 
-  LedgerEntries   CustomerLedger[]
-  Sales           Sale[]
-  SaleReturns     SaleReturn[]
-  CustomerCheques CustomerCheque[]
-  CreditPayments  CreditPayment[]
+  LedgerEntries       CustomerLedger[]
+  Sales               Sale[]
+  SaleReturns         SaleReturn[]
+  CustomerCheques     CustomerCheque[]
+  CreditPayments      CreditPayment[]
+  Quotations          Quotation[]
+  loyaltyTransactions LoyaltyTransaction[]
 
   @@index([Name])
   @@index([Phone])
@@ -715,16 +719,21 @@ model Sale {
   CashierId   String  @db.Uuid
   CustomerId  String? @db.Uuid // null = walk-in
 
-  Subtotal       Decimal @db.Decimal(18, 4)
-  DiscountAmount Decimal @default(0) @db.Decimal(18, 4)
-  TaxAmount      Decimal @default(0) @db.Decimal(18, 4)
-  TotalAmount    Decimal @db.Decimal(18, 4)
+  Subtotal              Decimal @db.Decimal(18, 4)
+  DiscountAmount        Decimal @default(0) @db.Decimal(18, 4)
+  TaxAmount             Decimal @default(0) @db.Decimal(18, 4)
+  TotalAmount           Decimal @db.Decimal(18, 4)
   // Cached payment split — source of truth is SalePayments, but these
   // make payment-method reports a single-index scan.
-  CashAmount     Decimal @default(0) @db.Decimal(18, 4)
-  CardAmount     Decimal @default(0) @db.Decimal(18, 4)
-  CreditAmount   Decimal @default(0) @db.Decimal(18, 4)
-  ChequeAmount   Decimal @default(0) @db.Decimal(18, 4)
+  CashAmount            Decimal @default(0) @db.Decimal(18, 4)
+  CardAmount            Decimal @default(0) @db.Decimal(18, 4)
+  CreditAmount          Decimal @default(0) @db.Decimal(18, 4)
+  ChequeAmount          Decimal @default(0) @db.Decimal(18, 4)
+  // Loyalty — snapshot at sale time
+  LoyaltyEarnedPoints   Int     @default(0)
+  LoyaltyRedeemedPoints Int     @default(0)
+  LoyaltyDiscountAmount Decimal @default(0) @db.Decimal(18, 4)
+  LoyaltyReversedPoints Int     @default(0) // earned points clawed back (cancel or return)
 
   PaidAmount     Decimal @default(0) @db.Decimal(18, 4) // cash + card + credit-paid
   RefundedAmount Decimal @default(0) @db.Decimal(18, 4) // sum of SaleReturn totals
@@ -741,10 +750,11 @@ model Sale {
   CreatedByUserId String?   @db.Uuid
   UpdatedByUserId String?   @db.Uuid
 
-  Terminal  Terminal  @relation(fields: [TerminalId], references: [Id], onDelete: Restrict)
-  Warehouse Warehouse @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
-  Cashier   User      @relation("SaleCashier", fields: [CashierId], references: [Id], onDelete: Restrict)
-  Customer  Customer? @relation(fields: [CustomerId], references: [Id], onDelete: SetNull)
+  Terminal  Terminal   @relation(fields: [TerminalId], references: [Id], onDelete: Restrict)
+  Warehouse Warehouse  @relation(fields: [WarehouseId], references: [Id], onDelete: Restrict)
+  Cashier   User       @relation("SaleCashier", fields: [CashierId], references: [Id], onDelete: Restrict)
+  Customer  Customer?  @relation(fields: [CustomerId], references: [Id], onDelete: SetNull)
+  Quotation Quotation? @relation("QuotationConversion")
 
   Items    SaleItem[]
   Payments SalePayment[]
@@ -1136,4 +1146,131 @@ model CashMovement {
   @@index([CashSessionId])
   @@index([CreatedAt])
   @@map("CashMovements")
+}
+
+// =============================================================
+// PHASE 7 — QUOTATIONS
+// =============================================================
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  CONVERTED
+}
+
+model Quotation {
+  Id   String @id @default(uuid()) @db.Uuid
+  Code String @unique // QUO-00001
+
+  CustomerId String? @db.Uuid // null = walk-in quote
+
+  Status QuotationStatus @default(DRAFT)
+
+  Subtotal       Decimal @db.Decimal(18, 4)
+  DiscountAmount Decimal @default(0) @db.Decimal(18, 4)
+  TaxAmount      Decimal @default(0) @db.Decimal(18, 4)
+  TotalAmount    Decimal @db.Decimal(18, 4)
+
+  ValidUntil DateTime? @db.Timestamptz(6)
+  Notes      String?
+
+  // Set when the quote is converted to a Sale.
+  SaleId            String?   @unique @db.Uuid
+  ConvertedAt       DateTime? @db.Timestamptz(6)
+  ConvertedByUserId String?   @db.Uuid
+
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(6)
+  UpdatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  DeletedAt       DateTime? @db.Timestamptz(6)
+  CreatedByUserId String?   @db.Uuid
+  UpdatedByUserId String?   @db.Uuid
+
+  Customer Customer? @relation(fields: [CustomerId], references: [Id], onDelete: SetNull)
+  Sale     Sale?     @relation("QuotationConversion", fields: [SaleId], references: [Id], onDelete: SetNull)
+
+  Items QuotationItem[]
+
+  @@index([CustomerId])
+  @@index([Status])
+  @@index([ValidUntil])
+  @@index([CreatedAt])
+  @@index([DeletedAt])
+  @@map("Quotations")
+}
+
+model QuotationItem {
+  Id          String @id @default(uuid()) @db.Uuid
+  QuotationId String @db.Uuid
+  ProductId   String @db.Uuid
+
+  Qty       Int
+  UnitPrice Decimal  @db.Decimal(18, 4)
+  Discount  Decimal  @default(0) @db.Decimal(18, 4) // % off line
+  TaxRate   Decimal? @db.Decimal(5, 2)
+
+  LineSubtotal Decimal @db.Decimal(18, 4) // Qty * UnitPrice
+  LineDiscount Decimal @default(0) @db.Decimal(18, 4)
+  LineTax      Decimal @default(0) @db.Decimal(18, 4)
+  LineTotal    Decimal @db.Decimal(18, 4) // Subtotal - Discount + Tax
+
+  Notes String?
+
+  CreatedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  Quotation Quotation @relation(fields: [QuotationId], references: [Id], onDelete: Cascade)
+  Product   Product   @relation(fields: [ProductId], references: [Id], onDelete: Restrict)
+
+  @@index([QuotationId])
+  @@index([ProductId])
+  @@map("QuotationItems")
+}
+
+// =============================================================
+// PHASE 7c — LOYALTY
+// =============================================================
+
+enum LoyaltyTransactionType {
+  EARN // customer earned points from a sale
+  REDEEM // customer spent points at checkout
+  ADJUST // manual admin adjustment
+  REVERSAL // points clawed back (sale cancel, partial return)
+}
+
+model LoyaltyTransaction {
+  Id         String                 @id @default(uuid()) @db.Uuid
+  CustomerId String                 @db.Uuid
+  Type       LoyaltyTransactionType
+
+  /**
+   * Signed. EARN/up-adjust positive, REDEEM/down-adjust/reversal-of-earn negative.
+   */
+  Points      Int
+  /**
+   * Running total immediately after this transaction.
+   */
+  PointsAfter Int
+
+  SaleId       String? @db.Uuid
+  SaleReturnId String? @db.Uuid
+  /**
+   * Set when this txn is reversing an earlier one (cancel, return).
+   */
+  ReversalOfId String? @db.Uuid
+
+  Notes String?
+
+  CreatedAt       DateTime @default(now()) @db.Timestamptz(6)
+  CreatedByUserId String?  @db.Uuid
+
+  Customer Customer @relation(fields: [CustomerId], references: [Id], onDelete: Restrict)
+
+  @@index([CustomerId])
+  @@index([Type])
+  @@index([CreatedAt])
+  @@index([SaleId])
+  @@index([ReversalOfId])
+  @@map("LoyaltyTransactions")
 }

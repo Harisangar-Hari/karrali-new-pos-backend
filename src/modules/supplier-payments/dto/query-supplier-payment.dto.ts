@@ -1,3 +1,4 @@
+//src/modules/supplier-payments/dto/query-supplier-payment.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { SupplierPaymentMethod } from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';

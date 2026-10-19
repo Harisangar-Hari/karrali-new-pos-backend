@@ -1,3 +1,4 @@
+//src/modules/expenses/dto/update-expense.dto.ts
 import { OmitType, PartialType } from '@nestjs/swagger';
 import { CreateExpenseDto } from './create-expense.dto';
 

@@ -1,3 +1,4 @@
+//src/modules/customer-cheques/dto/void-customer-cheque.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 

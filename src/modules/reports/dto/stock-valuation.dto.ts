@@ -1,3 +1,4 @@
+//src/modules/reports/dto/stock-valuation.dto.ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBoolean, IsIn, IsOptional, IsUUID } from 'class-validator';
 import { Transform } from 'class-transformer';

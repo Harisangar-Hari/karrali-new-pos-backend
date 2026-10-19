@@ -32,9 +32,16 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'products.delete', Description: 'Delete products' },
     { Code: 'categories.manage', Description: 'Manage categories' },
     { Code: 'brands.manage', Description: 'Manage brands' },
+    { Code: 'warehouses.view', Description: 'View warehouses' },
     { Code: 'warehouses.manage', Description: 'Manage warehouses' },
+    { Code: 'terminals.view', Description: 'View terminals' },
     { Code: 'terminals.manage', Description: 'Manage terminals' },
 
+    // --- Stock ---
+    { Code: 'stock.view', Description: 'View stock levels and movement ledger' },
+    { Code: 'stock.adjust', Description: 'Manually adjust stock (OPENING / ADJUSTMENT)' },
+
+    // --- Customers / suppliers ---
     { Code: 'customers.view', Description: 'View customers' },
     { Code: 'customers.create', Description: 'Create customers' },
     { Code: 'customers.update', Description: 'Update customers' },
@@ -50,13 +57,13 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'purchases.delete', Description: 'Delete purchases' },
     { Code: 'supplier_payments.view', Description: 'View supplier payments' },
     { Code: 'supplier_payments.create', Description: 'Create supplier payments' },
+    { Code: 'supplier_payments.reverse', Description: 'Reverse (delete) a recorded supplier payment' },
     { Code: 'supplier_payments.clear', Description: 'Clear/bounce supplier cheques' },
     { Code: 'supplier_cheques.view', Description: 'View supplier cheques' },
     { Code: 'supplier_cheques.create', Description: 'Issue supplier cheques' },
     { Code: 'supplier_cheques.clear', Description: 'Mark supplier cheques as cleared' },
     { Code: 'supplier_cheques.bounce', Description: 'Mark supplier cheques as bounced' },
     { Code: 'supplier_cheques.void', Description: 'Void a pending supplier cheque' },
-    { Code: 'supplier_payments.reverse', Description: 'Reverse (delete) a recorded supplier payment' },
 
     // --- Sales ---
     { Code: 'sales.view', Description: 'View sales' },
@@ -71,18 +78,20 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
 
     { Code: 'credit_payments.view', Description: 'View credit payments' },
     { Code: 'credit_payments.create', Description: 'Create credit payments' },
-    { Code: 'credit_payments.clear', Description: 'Clear/bounce customer cheques' },
     { Code: 'credit_payments.reverse', Description: 'Reverse a recorded credit payment' },
+    { Code: 'credit_payments.clear', Description: 'Clear/bounce customer cheques' },
 
-    { Code: 'quotations.view', Description: 'View quotations' },
-    { Code: 'quotations.create', Description: 'Create quotations' },
-    { Code: 'quotations.update', Description: 'Update quotations' },
-    { Code: 'quotations.convert', Description: 'Convert quotations into sales' },
     { Code: 'customer_cheques.view', Description: 'View customer cheques' },
     { Code: 'customer_cheques.create', Description: 'Record customer cheques (single or bulk)' },
     { Code: 'customer_cheques.clear', Description: 'Mark customer cheques as cleared' },
     { Code: 'customer_cheques.bounce', Description: 'Mark customer cheques as bounced' },
     { Code: 'customer_cheques.void', Description: 'Void a pending customer cheque' },
+
+    { Code: 'quotations.view', Description: 'View quotations' },
+    { Code: 'quotations.create', Description: 'Create quotations' },
+    { Code: 'quotations.update', Description: 'Update quotations' },
+    { Code: 'quotations.convert', Description: 'Convert quotations into sales' },
+    { Code: 'quotations.delete', Description: 'Delete a draft quotation' },
 
     // --- Cash ---
     { Code: 'cash_sessions.view', Description: 'View cash sessions' },
@@ -91,11 +100,25 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     { Code: 'cash_ledger.view', Description: 'View cash ledger' },
     { Code: 'cash_in_out.create', Description: 'Record manual cash in / out' },
 
-    // --- Expenses ---
+    // --- Cash movements ---
+    { Code: 'cash_movements.view', Description: 'View manual cash in/out records' },
+    { Code: 'cash_movements.create', Description: 'Record manual cash in/out' },
+    { Code: 'cash_movements.delete', Description: 'Delete a manual cash movement' },
+
+    // --- Expenses / banking ---
     { Code: 'expenses.view', Description: 'View expenses' },
     { Code: 'expenses.create', Description: 'Create expenses' },
     { Code: 'expenses.update', Description: 'Update expenses' },
     { Code: 'expenses.delete', Description: 'Delete expenses' },
+    { Code: 'expense_categories.view', Description: 'View expense categories' },
+    { Code: 'expense_categories.manage', Description: 'Manage expense categories' },
+    { Code: 'bank_accounts.view', Description: 'View bank accounts' },
+    { Code: 'bank_accounts.manage', Description: 'Manage bank accounts' },
+
+    // --- Loyalty ---
+    { Code: 'loyalty.view', Description: 'View loyalty balances and transactions' },
+    { Code: 'loyalty.adjust', Description: "Manually adjust a customer's loyalty points" },
+    { Code: 'loyalty.manage', Description: 'Configure loyalty program settings' },
 
     // --- Reports ---
     { Code: 'reports.sales', Description: 'Sales reports' },
@@ -109,21 +132,6 @@ const PERMISSIONS: { Code: string; Description: string }[] = [
     // --- Settings ---
     { Code: 'settings.view', Description: 'View settings' },
     { Code: 'settings.manage', Description: 'Manage settings' },
-
-    //warehouses and terminals
-    { Code: 'warehouses.view', Description: 'View warehouses' },
-    { Code: 'terminals.view', Description: 'View terminals' },
-
-    // --- Cash movements ---
-    { Code: 'cash_movements.view', Description: 'View manual cash in/out records' },
-    { Code: 'cash_movements.create', Description: 'Record manual cash in/out' },
-    { Code: 'cash_movements.delete', Description: 'Delete a manual cash movement' },
-
-    // --- Expenses ---
-    { Code: 'expense_categories.view', Description: 'View expense categories' },
-    { Code: 'expense_categories.manage', Description: 'Manage expense categories' },
-    { Code: 'bank_accounts.view', Description: 'View bank accounts' },
-    { Code: 'bank_accounts.manage', Description: 'Manage bank accounts' },
 ];
 
 // =============================================================
@@ -138,23 +146,47 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
     },
     {
         Name: 'MANAGER',
-        Description: 'Store manager — everything except user/role administration.',
+        Description: 'Store manager — everything except user/role/settings administration.',
         Permissions: [
+            // Catalog
             'products.view', 'products.create', 'products.update', 'products.delete',
-            'categories.manage', 'brands.manage', 'warehouses.manage', 'terminals.manage',
+            'categories.manage', 'brands.manage',
+            'warehouses.view', 'warehouses.manage',
+            'terminals.view', 'terminals.manage',
+            // Stock
+            'stock.view', 'stock.adjust',
+            // People
             'customers.view', 'customers.create', 'customers.update', 'customers.delete',
             'suppliers.view', 'suppliers.manage',
+            // Purchases
             'purchases.view', 'purchases.create', 'purchases.update', 'purchases.delete',
-            'supplier_payments.view', 'supplier_payments.create', 'supplier_payments.clear',
+            'supplier_payments.view', 'supplier_payments.create', 'supplier_payments.reverse',
+            'supplier_payments.clear',
+            'supplier_cheques.view', 'supplier_cheques.create', 'supplier_cheques.clear',
+            'supplier_cheques.bounce', 'supplier_cheques.void',
+            // Sales
             'sales.view', 'sales.create', 'sales.update', 'sales.void', 'sales.discount',
             'sale_returns.view', 'sale_returns.create', 'sale_returns.approve',
-            'credit_payments.view', 'credit_payments.create', 'credit_payments.clear',
-            'quotations.view', 'quotations.create', 'quotations.update', 'quotations.convert',
+            'credit_payments.view', 'credit_payments.create', 'credit_payments.reverse',
+            'credit_payments.clear',
+            'customer_cheques.view', 'customer_cheques.create', 'customer_cheques.clear',
+            'customer_cheques.bounce', 'customer_cheques.void',
+            'quotations.view', 'quotations.create', 'quotations.update',
+            'quotations.convert', 'quotations.delete',
+            // Cash
             'cash_sessions.view', 'cash_sessions.open', 'cash_sessions.close',
             'cash_ledger.view', 'cash_in_out.create',
-            'expenses.view', 'expenses.create', 'expenses.update',
+            'cash_movements.view', 'cash_movements.create', 'cash_movements.delete',
+            // Expenses / banking
+            'expenses.view', 'expenses.create', 'expenses.update', 'expenses.delete',
+            'expense_categories.view', 'expense_categories.manage',
+            'bank_accounts.view', 'bank_accounts.manage',
+            // Loyalty
+            'loyalty.view', 'loyalty.adjust',
+            // Reports
             'reports.sales', 'reports.profit', 'reports.stock', 'reports.aging',
-            'reports.z_report', 'reports.cheque_calendar',
+            'reports.z_report', 'reports.cheque_calendar', 'reports.cashflow',
+            // Audit
             'audit.view',
         ],
     },
@@ -162,13 +194,25 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
         Name: 'CASHIER',
         Description: 'Front-desk cashier — sales, customers, drawer.',
         Permissions: [
+            // Catalog reads
             'products.view',
+            'warehouses.view', 'terminals.view',
+            'stock.view',
+            // Customers
             'customers.view', 'customers.create', 'customers.update',
+            // Sales
             'sales.view', 'sales.create', 'sales.discount',
             'sale_returns.view', 'sale_returns.create',
             'credit_payments.view', 'credit_payments.create',
+            'customer_cheques.view', 'customer_cheques.create',
             'quotations.view', 'quotations.create',
+            // Cash
             'cash_sessions.view', 'cash_sessions.open', 'cash_sessions.close',
+            'cash_ledger.view',
+            'cash_movements.view', 'cash_movements.create',
+            // Loyalty
+            'loyalty.view',
+            // Reports
             'reports.z_report',
         ],
     },
@@ -176,14 +220,34 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
         Name: 'ACCOUNTANT',
         Description: 'Finance — payments, ledgers, reports.',
         Permissions: [
-            'products.view', 'customers.view', 'suppliers.view',
-            'purchases.view', 'supplier_payments.view', 'supplier_payments.clear',
+            // Catalog reads
+            'products.view',
+            'warehouses.view', 'terminals.view',
+            'stock.view',
+            // People reads
+            'customers.view', 'suppliers.view',
+            // Purchases
+            'purchases.view',
+            'supplier_payments.view', 'supplier_payments.clear', 'supplier_payments.reverse',
+            'supplier_cheques.view', 'supplier_cheques.clear', 'supplier_cheques.bounce',
+            // Sales
             'sales.view', 'sale_returns.view',
-            'credit_payments.view', 'credit_payments.clear',
+            'credit_payments.view', 'credit_payments.clear', 'credit_payments.reverse',
+            'customer_cheques.view', 'customer_cheques.clear', 'customer_cheques.bounce',
+            'quotations.view',
+            // Cash
             'cash_sessions.view', 'cash_ledger.view',
+            'cash_movements.view',
+            // Expenses / banking
             'expenses.view', 'expenses.create', 'expenses.update', 'expenses.delete',
+            'expense_categories.view', 'expense_categories.manage',
+            'bank_accounts.view', 'bank_accounts.manage',
+            // Loyalty
+            'loyalty.view',
+            // Reports
             'reports.sales', 'reports.profit', 'reports.stock', 'reports.aging',
-            'reports.cheque_calendar',
+            'reports.cheque_calendar', 'reports.cashflow',
+            // Audit
             'audit.view',
         ],
     },
@@ -191,10 +255,17 @@ const ROLES: { Name: string; Description: string; Permissions: '*' | string[] }[
         Name: 'VIEWER',
         Description: 'Read-only access across the system.',
         Permissions: [
-            'products.view', 'customers.view', 'suppliers.view',
-            'purchases.view', 'sales.view', 'sale_returns.view',
-            'credit_payments.view', 'cash_sessions.view', 'cash_ledger.view',
-            'expenses.view', 'quotations.view',
+            'products.view',
+            'warehouses.view', 'terminals.view',
+            'stock.view',
+            'customers.view', 'suppliers.view',
+            'purchases.view', 'supplier_payments.view', 'supplier_cheques.view',
+            'sales.view', 'sale_returns.view',
+            'credit_payments.view', 'customer_cheques.view',
+            'quotations.view',
+            'cash_sessions.view', 'cash_ledger.view', 'cash_movements.view',
+            'expenses.view', 'expense_categories.view', 'bank_accounts.view',
+            'loyalty.view',
             'reports.sales', 'reports.stock', 'reports.aging',
         ],
     },

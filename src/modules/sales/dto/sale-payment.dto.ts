@@ -1,3 +1,4 @@
+//src/modules/sales/dto/sale-payment.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { SalePaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';

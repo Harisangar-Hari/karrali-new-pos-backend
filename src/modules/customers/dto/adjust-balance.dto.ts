@@ -1,3 +1,4 @@
+//src/modules/customers/dto/adjust-balance.dto.ts
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsNumber, IsOptional, IsString, MaxLength, NotEquals } from 'class-validator';
 

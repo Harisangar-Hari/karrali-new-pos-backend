@@ -1,3 +1,4 @@
+//src/modules/sales/dto/cancel-sale.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 
