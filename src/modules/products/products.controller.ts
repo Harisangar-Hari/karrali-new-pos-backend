@@ -27,12 +27,13 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductsService } from './products.service';
+import { ImportProductsDto, ImportProductsResult } from './dto/import-products.dto';
 
 @ApiTags('products')
 @ApiCookieAuth('cookie-auth')
 @Controller('products')
 export class ProductsController {
-    constructor(private readonly products: ProductsService) {}
+    constructor(private readonly products: ProductsService) { }
 
     @Get()
     @RequirePermissions('products.view')
@@ -97,5 +98,25 @@ export class ProductsController {
         @CurrentUser('userId') actorId: string,
     ) {
         return this.products.remove(id, actorId);
+    }
+
+    @Post('import')
+    @RequirePermissions('products.create')
+    @ApiOperation({
+        summary: 'Bulk import products from Excel',
+        description:
+            'Upserts by barcode. Categories and brands are resolved by name (created if missing). ' +
+            'The whole import is atomic — any error rolls back all rows.',
+    })
+    @ApiCreatedResponse({ description: 'Import summary.' })
+    @ApiBadRequestResponse({
+        description:
+            'Duplicate barcodes/SKUs in file, unknown warehouse, or SKU collision with an existing product.',
+    })
+    import(
+        @Body() dto: ImportProductsDto,
+        @CurrentUser('userId') actorId: string,
+    ): Promise<ImportProductsResult> {
+        return this.products.importProducts(dto, actorId);
     }
 }

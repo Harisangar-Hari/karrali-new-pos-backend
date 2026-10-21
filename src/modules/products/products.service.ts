@@ -12,6 +12,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { QueryProductDto } from './dto/query-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { AuditService } from '../audit/audit.service';
+import { ImportProductsDto, ImportProductsResult } from './dto/import-products.dto';
 
 const PRODUCT_LIST_INCLUDE = {
     Category: { select: { Id: true, Name: true } },
@@ -42,7 +43,7 @@ export class ProductsService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly audit: AuditService,
-    ) {}
+    ) { }
 
     async list(
         query: QueryProductDto,
@@ -66,14 +67,14 @@ export class ProductsService {
         if (query.inStock) {
             where.WarehouseStocks = query.WarehouseId
                 ? {
-                      some: {
-                          WarehouseId: query.WarehouseId,
-                          Qty: { gt: 0 },
-                      },
-                  }
+                    some: {
+                        WarehouseId: query.WarehouseId,
+                        Qty: { gt: 0 },
+                    },
+                }
                 : {
-                      some: { Qty: { gt: 0 } },
-                  };
+                    some: { Qty: { gt: 0 } },
+                };
         }
 
         if (query.search) {
@@ -205,9 +206,9 @@ export class ProductsService {
                     Metadata:
                         initialQty > 0 && initialWarehouseId
                             ? {
-                                  InitialQty: initialQty,
-                                  InitialWarehouseId: initialWarehouseId,
-                              }
+                                InitialQty: initialQty,
+                                InitialWarehouseId: initialWarehouseId,
+                            }
                             : undefined,
                 },
                 tx,
@@ -447,5 +448,402 @@ export class ProductsService {
                 hasPrev: query.page > 1,
             },
         };
+    }
+
+
+
+    // ---------------------------------------------------------------
+    // Bulk import — upsert by barcode, resolve categories/brands
+    // ---------------------------------------------------------------
+
+    async importProducts(
+        dto: ImportProductsDto,
+        actorId: string,
+    ): Promise<ImportProductsResult> {
+        const rows = dto.Rows;
+
+        // ---- Pre-checks outside the tx (fast fail, cheap) ----
+
+        const seenBarcodes = new Map<string, number>();
+        const seenSkus = new Map<string, number>();
+        const fileErrors: string[] = [];
+
+        let rowNum = 1; // header is row 1, first data row is row 2
+        for (const currentRow of rows) {
+            rowNum++;
+            const barcode = currentRow.Barcode?.trim();
+            const sku = currentRow.SKU?.trim();
+
+            if (barcode) {
+                const existing = seenBarcodes.get(barcode);
+                if (existing !== undefined) {
+                    fileErrors.push(
+                        `Row ${rowNum}: barcode "${barcode}" is duplicated (first seen at row ${existing})`,
+                    );
+                } else {
+                    seenBarcodes.set(barcode, rowNum);
+                }
+            }
+            if (sku) {
+                const existing = seenSkus.get(sku);
+                if (existing !== undefined) {
+                    fileErrors.push(
+                        `Row ${rowNum}: SKU "${sku}" is duplicated (first seen at row ${existing})`,
+                    );
+                } else {
+                    seenSkus.set(sku, rowNum);
+                }
+            }
+        }
+
+        if (fileErrors.length > 0) {
+            throw new BadRequestException(fileErrors.join(' | '));
+        }
+
+        // ---- Atomic write ----
+
+        return this.prisma.$transaction(async (tx) => {
+            // 1. Resolve or create categories
+            const categoryNames = Array.from(
+                new Set(rows.map((r) => r.CategoryName.trim())),
+            );
+            const existingCategories = await tx.category.findMany({
+                where: { Name: { in: categoryNames }, DeletedAt: null },
+                select: { Id: true, Name: true },
+            });
+            const categoryMap = new Map(
+                existingCategories.map((c) => [c.Name.toLowerCase(), c.Id]),
+            );
+
+            let categoriesCreated = 0;
+            for (const name of categoryNames) {
+                const key = name.toLowerCase();
+                if (!categoryMap.has(key)) {
+                    const created = await tx.category.create({
+                        data: {
+                            Name: name,
+                            IsActive: true,
+                            CreatedByUserId: actorId,
+                            UpdatedByUserId: actorId,
+                        },
+                    });
+                    categoryMap.set(key, created.Id);
+                    categoriesCreated++;
+                }
+            }
+
+            // 2. Resolve or create brands
+            const brandNames = Array.from(
+                new Set(
+                    rows
+                        .map((r) => r.BrandName?.trim())
+                        .filter((b): b is string => !!b),
+                ),
+            );
+            const existingBrands =
+                brandNames.length > 0
+                    ? await tx.brand.findMany({
+                        where: { Name: { in: brandNames }, DeletedAt: null },
+                        select: { Id: true, Name: true },
+                    })
+                    : [];
+            const brandMap = new Map(
+                existingBrands.map((b) => [b.Name.toLowerCase(), b.Id]),
+            );
+
+            let brandsCreated = 0;
+            for (const name of brandNames) {
+                const key = name.toLowerCase();
+                if (!brandMap.has(key)) {
+                    const created = await tx.brand.create({
+                        data: {
+                            Name: name,
+                            IsActive: true,
+                            CreatedByUserId: actorId,
+                            UpdatedByUserId: actorId,
+                        },
+                    });
+                    brandMap.set(key, created.Id);
+                    brandsCreated++;
+                }
+            }
+
+            // 3. Resolve warehouses
+            const warehouseCodes = Array.from(
+                new Set(
+                    rows
+                        .map((r) => r.InitialWarehouseCode?.trim())
+                        .filter((w): w is string => !!w),
+                ),
+            );
+            const existingWarehouses =
+                warehouseCodes.length > 0
+                    ? await tx.warehouse.findMany({
+                        where: {
+                            Code: { in: warehouseCodes },
+                            DeletedAt: null,
+                        },
+                        select: { Id: true, Code: true },
+                    })
+                    : [];
+            const warehouseMap = new Map(
+                existingWarehouses.map((w) => [w.Code.toLowerCase(), w.Id]),
+            );
+
+            for (const code of warehouseCodes) {
+                if (!warehouseMap.has(code.toLowerCase())) {
+                    throw new BadRequestException(
+                        `Warehouse "${code}" not found (referenced by InitialWarehouseCode)`,
+                    );
+                }
+            }
+
+            // 4. Look up existing products by barcode / SKU
+            const barcodesInFile = Array.from(seenBarcodes.keys());
+            const existingByBarcode =
+                barcodesInFile.length > 0
+                    ? await tx.product.findMany({
+                        where: { Barcode: { in: barcodesInFile } },
+                        select: { Id: true, Barcode: true },
+                    })
+                    : [];
+            const barcodeToExisting = new Map(
+                existingByBarcode.map((p) => [p.Barcode!, p.Id]),
+            );
+
+            const skusInFile = Array.from(seenSkus.keys());
+            const existingBySku =
+                skusInFile.length > 0
+                    ? await tx.product.findMany({
+                        where: { SKU: { in: skusInFile } },
+                        select: { Id: true, SKU: true },
+                    })
+                    : [];
+            const skuToExisting = new Map(
+                existingBySku.map((p) => [p.SKU!, p.Id]),
+            );
+
+            // 5. Pre-check SKU collisions for rows that will CREATE
+            const skuErrors: string[] = [];
+            let skuCheckRowNum = 1;
+            for (const currentRow of rows) {
+                skuCheckRowNum++;
+                const barcode = currentRow.Barcode?.trim();
+                const sku = currentRow.SKU?.trim();
+
+                const willCreate = !barcode || !barcodeToExisting.has(barcode);
+                if (willCreate && sku && skuToExisting.has(sku)) {
+                    skuErrors.push(
+                        `Row ${skuCheckRowNum}: SKU "${sku}" is already used by another product — change it or add the barcode of the existing product`,
+                    );
+                }
+            }
+            if (skuErrors.length > 0) {
+                throw new BadRequestException(skuErrors.join(' | '));
+            }
+
+            // 6. Upsert each row
+            let created = 0;
+            let updated = 0;
+            let upsertRowNum = 1;
+
+            for (const currentRow of rows) {
+                upsertRowNum++;
+
+                const categoryId = categoryMap.get(
+                    currentRow.CategoryName.trim().toLowerCase(),
+                );
+                if (!categoryId) {
+                    throw new BadRequestException(
+                        `Category "${currentRow.CategoryName}" failed to resolve`,
+                    );
+                }
+
+                const brandId = currentRow.BrandName
+                    ? (brandMap.get(
+                        currentRow.BrandName.trim().toLowerCase(),
+                    ) ?? null)
+                    : null;
+                const barcode = currentRow.Barcode?.trim() || null;
+                const sku = currentRow.SKU?.trim() || null;
+
+                const existingId = barcode
+                    ? barcodeToExisting.get(barcode)
+                    : undefined;
+
+                if (existingId) {
+                    // ---- UPDATE path ----
+                    await tx.product.update({
+                        where: { Id: existingId },
+                        data: {
+                            Name: currentRow.Name,
+                            SKU: sku,
+                            CategoryId: categoryId,
+                            BrandId: brandId,
+                            Price: currentRow.Price,
+                            CostPrice: currentRow.CostPrice,
+                            Unit: currentRow.Unit ?? 'pcs',
+                            Description: currentRow.Description ?? null,
+                            Discount: currentRow.Discount ?? 0,
+                            TaxRate: currentRow.TaxRate ?? null,
+                            ReorderLevel: currentRow.ReorderLevel ?? 0,
+                            WarrantyMonths: currentRow.WarrantyMonths ?? 0,
+                            IsActive: currentRow.IsActive ?? true,
+                            UpdatedByUserId: actorId,
+                        },
+                    });
+
+                    // Stock: when InitialQty > 0 and InitialWarehouseCode
+                    // are both set, reconcile the stock to match the file
+                    // via an ADJUSTMENT movement (delta between current
+                    // and desired). Rows without InitialQty leave stock
+                    // untouched.
+                    const desiredQty = currentRow.InitialQty;
+                    if (desiredQty !== undefined && desiredQty > 0) {
+                        if (!currentRow.InitialWarehouseCode) {
+                            throw new BadRequestException(
+                                `Row ${upsertRowNum}: InitialWarehouseCode is required when InitialQty > 0 for existing product "${currentRow.Name}"`,
+                            );
+                        }
+
+                        const warehouseId = warehouseMap.get(
+                            currentRow.InitialWarehouseCode
+                                .trim()
+                                .toLowerCase(),
+                        );
+                        if (!warehouseId) {
+                            throw new BadRequestException(
+                                `Row ${upsertRowNum}: warehouse "${currentRow.InitialWarehouseCode}" not found`,
+                            );
+                        }
+
+                        const existingStock = await tx.warehouseStock.findUnique(
+                            {
+                                where: {
+                                    ProductId_WarehouseId: {
+                                        ProductId: existingId,
+                                        WarehouseId: warehouseId,
+                                    },
+                                },
+                                select: { Qty: true },
+                            },
+                        );
+                        const currentQty = existingStock?.Qty ?? 0;
+                        const delta = desiredQty - currentQty;
+
+                        if (delta !== 0) {
+                            await tx.warehouseStock.upsert({
+                                where: {
+                                    ProductId_WarehouseId: {
+                                        ProductId: existingId,
+                                        WarehouseId: warehouseId,
+                                    },
+                                },
+                                create: {
+                                    ProductId: existingId,
+                                    WarehouseId: warehouseId,
+                                    Qty: desiredQty,
+                                },
+                                update: { Qty: desiredQty },
+                            });
+                            await tx.stockMovement.create({
+                                data: {
+                                    ProductId: existingId,
+                                    WarehouseId: warehouseId,
+                                    Type: 'ADJUSTMENT',
+                                    Quantity: delta,
+                                    UnitCost: currentRow.CostPrice,
+                                    Notes: `Bulk import: stock ${currentQty} → ${desiredQty}`,
+                                    CreatedByUserId: actorId,
+                                },
+                            });
+                        }
+                    }
+
+                    updated++;
+                } else {
+                    // ---- CREATE path ----
+                    const product = await tx.product.create({
+                        data: {
+                            Name: currentRow.Name,
+                            SKU: sku,
+                            Barcode: barcode,
+                            CategoryId: categoryId,
+                            BrandId: brandId,
+                            Price: currentRow.Price,
+                            CostPrice: currentRow.CostPrice,
+                            Unit: currentRow.Unit ?? 'pcs',
+                            Description: currentRow.Description ?? null,
+                            Discount: currentRow.Discount ?? 0,
+                            TaxRate: currentRow.TaxRate ?? null,
+                            ReorderLevel: currentRow.ReorderLevel ?? 0,
+                            WarrantyMonths: currentRow.WarrantyMonths ?? 0,
+                            IsActive: currentRow.IsActive ?? true,
+                            CreatedByUserId: actorId,
+                            UpdatedByUserId: actorId,
+                        },
+                    });
+
+                    if (
+                        currentRow.InitialQty &&
+                        currentRow.InitialQty > 0 &&
+                        currentRow.InitialWarehouseCode
+                    ) {
+                        const warehouseId = warehouseMap.get(
+                            currentRow.InitialWarehouseCode
+                                .trim()
+                                .toLowerCase(),
+                        );
+                        if (warehouseId) {
+                            await tx.warehouseStock.create({
+                                data: {
+                                    ProductId: product.Id,
+                                    WarehouseId: warehouseId,
+                                    Qty: currentRow.InitialQty,
+                                },
+                            });
+                            await tx.stockMovement.create({
+                                data: {
+                                    ProductId: product.Id,
+                                    WarehouseId: warehouseId,
+                                    Type: 'OPENING',
+                                    Quantity: currentRow.InitialQty,
+                                    UnitCost: currentRow.CostPrice,
+                                    Notes: 'Opening stock (bulk import)',
+                                    CreatedByUserId: actorId,
+                                },
+                            });
+                        }
+                    }
+
+                    created++;
+                }
+            }
+
+            await this.audit.log(
+                {
+                    UserId: actorId,
+                    Action: 'PRODUCTS_IMPORTED',
+                    Entity: 'Product',
+                    EntityId: null,
+                    Metadata: {
+                        TotalRows: rows.length,
+                        Created: created,
+                        Updated: updated,
+                        CategoriesCreated: categoriesCreated,
+                        BrandsCreated: brandsCreated,
+                    },
+                },
+                tx,
+            );
+
+            return {
+                Total: rows.length,
+                Created: created,
+                Updated: updated,
+                CategoriesCreated: categoriesCreated,
+                BrandsCreated: brandsCreated,
+            };
+        });
     }
 }
