@@ -14,8 +14,10 @@ export class CookieService {
         this.base = {
             httpOnly: true,
             secure: this.config.get('cookies.secure', { infer: true }),
-            sameSite: 'lax',
-            domain: this.config.get('cookies.domain', { infer: true }),
+            sameSite: (process.env.NODE_ENV === 'production' ? 'none' : 'lax') as
+                | 'none'
+                | 'lax',
+            domain: config.get('cookies.domain', { infer: true }) || undefined,
             path: '/',
         };
     }
