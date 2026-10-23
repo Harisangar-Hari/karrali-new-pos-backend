@@ -48,4 +48,13 @@ export class QueryPurchaseDto extends PaginationDto {
     @IsOptional()
     @IsIn(['asc', 'desc'])
     override sortOrder: 'asc' | 'desc' = 'desc';
+
+     @ApiPropertyOptional({
+        enum: ['paid', 'partial', 'unpaid'],
+        description:
+            'Filter by payment state. paid = PaidAmount >= TotalAmount; partial = 0 < PaidAmount < TotalAmount; unpaid = PaidAmount = 0.',
+    })
+    @IsOptional()
+    @IsIn(['paid', 'partial', 'unpaid'])
+    paymentStatus?: 'paid' | 'partial' | 'unpaid';
 }

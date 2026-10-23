@@ -73,6 +73,22 @@ export class PurchasesService {
                 { SupplierInvoiceNo: { contains: query.search, mode: 'insensitive' } },
             ];
         }
+        // Payment status filter — uses Prisma field references so the
+        // comparison happens in SQL (TotalAmount vs PaidAmount), not by
+        // fetching everything and filtering in memory.
+        if (query.paymentStatus === 'paid') {
+            where.PaidAmount = { gte: this.prisma.purchase.fields.TotalAmount };
+        } else if (query.paymentStatus === 'unpaid') {
+            where.AND = [
+                { PaidAmount: { lte: 0 } },
+                { TotalAmount: { gt: 0 } },
+            ];
+        } else if (query.paymentStatus === 'partial') {
+            where.AND = [
+                { PaidAmount: { gt: 0 } },
+                { PaidAmount: { lt: this.prisma.purchase.fields.TotalAmount } },
+            ];
+        }
 
         const orderBy: Prisma.PurchaseOrderByWithRelationInput = {
             [query.sortBy ?? 'InvoiceDate']: query.sortOrder,
